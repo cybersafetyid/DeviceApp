@@ -40,7 +40,8 @@ fun ValidatorDashboardScreen(
     telemetry: TelemetryStatus,
     terminalConfig: TerminalConfig?,
     uiState: UiTransactionState,
-    onTestTap: (bankIssuer: String) -> Unit
+    onTestTap: (bankIssuer: String) -> Unit,
+    showSimulatorActions: Boolean = false
 ) {
     val backgroundColor by animateColorAsState(
         targetValue = when (uiState) {
@@ -93,8 +94,9 @@ fun ValidatorDashboardScreen(
                 }
             }
 
-            // Bottom Simulator Bar
-            SimulatorActionBar(onTestTap)
+            if (showSimulatorActions) {
+                SimulatorActionBar(onTestTap)
+            }
         }
     }
 }
@@ -128,7 +130,7 @@ fun TopTelemetryHeader(telemetry: TelemetryStatus, config: TerminalConfig?) {
             Column {
                 Text(text = currentTime.value, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                 Text(
-                    text = "BUS: ${config?.busCode ?: "BUS-1049"} | ${appVersion.formattedVersion}",
+                    text = "BUS: ${config?.busCode ?: "UNCONFIGURED"} | ${appVersion.formattedVersion}",
                     color = Color(0xFF94A3B8),
                     fontSize = 10.sp
                 )

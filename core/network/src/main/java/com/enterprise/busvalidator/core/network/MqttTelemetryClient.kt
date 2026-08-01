@@ -3,7 +3,10 @@ package com.enterprise.busvalidator.core.network
 import com.enterprise.busvalidator.core.common.AppDispatchers
 import com.enterprise.busvalidator.core.model.DeviceIdentity
 import com.enterprise.busvalidator.core.model.LocationTelemetryPayload
+import com.enterprise.busvalidator.core.model.MqttBrokerConfig
+import com.enterprise.busvalidator.core.model.MqttTransport
 import com.enterprise.busvalidator.core.model.TelemetryStatus
+import com.enterprise.busvalidator.core.model.TerminalConfig
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -34,11 +37,14 @@ import javax.inject.Singleton
 @Singleton
 class MqttTelemetryClient @Inject constructor(
     private val logger: EncryptedLogger,
-    private val dispatchers: AppDispatchers
+    private val dispatchers: AppDispatchers,
+    private val runtimeConfigStore: OperatorRuntimeConfigStore
 ) : LocationTelemetryMqttPublisher {
     private var mqttClient: MqttClient? = null
-    private val brokerUrl = "ssl://mqtt.busvalidator.enterprise.com:8883"
-    private val deviceId = DeviceIdentity.DEFAULT_DEVICE_ID
+    @Volatile
+    private var brokerConfig = DEFAULT_BROKER_CONFIG
+    @Volatile
+    private var runtimeConfig = runtimeConfigStore.activeTerminalConfig
     private val started = AtomicBoolean(false)
     private val connectMutex = Mutex()
     private val publishMutex = Mutex()
@@ -60,6 +66,47 @@ class MqttTelemetryClient @Inject constructor(
         scope.launch(dispatchers.io) {
             reconnectLoop()
         }
+    }
+
+    @Synchronized
+    fun configureBroker(config: MqttBrokerConfig) {
+        if (brokerConfig == config) return
+
+        val oldBrokerUrl = brokerConfig.brokerUrl
+        brokerConfig = config
+        runCatching {
+            mqttClient?.takeIf { it.isConnected }?.disconnect()
+            mqttClient?.close()
+        }.onFailure { error ->
+            logger.log("MQTT", "Failed closing MQTT client for broker switch: ${error.message}", isError = true)
+        }
+        mqttClient = null
+        _connectionState.value = false
+        logger.log("MQTT", "Broker changed from $oldBrokerUrl to ${config.brokerUrl}")
+    }
+
+    @Synchronized
+    fun configureRuntime(config: TerminalConfig) {
+        runtimeConfigStore.setTerminalConfig(config)
+        val oldRuntime = runtimeConfig
+        runtimeConfig = config
+        val topicChanged = oldRuntime.busCode != config.busCode ||
+            oldRuntime.hardwareId != config.hardwareId ||
+            oldRuntime.operatorConfig.legacyRegionName != config.operatorConfig.legacyRegionName
+        if (!topicChanged) return
+
+        runCatching {
+            mqttClient?.takeIf { it.isConnected }?.disconnect()
+            mqttClient?.close()
+        }.onFailure { error ->
+            logger.log("MQTT", "Failed closing MQTT client for runtime switch: ${error.message}", isError = true)
+        }
+        mqttClient = null
+        _connectionState.value = false
+        logger.log(
+            "MQTT",
+            "Runtime topic changed to region=${config.operatorConfig.legacyRegionName}, bus=${config.busCode}, hwid=${config.hardwareId}"
+        )
     }
 
     fun connect() {
@@ -108,7 +155,9 @@ class MqttTelemetryClient @Inject constructor(
     }
 
     private fun connectBlocking() {
-        val client = mqttClient ?: MqttClient(brokerUrl, deviceId, MemoryPersistence()).also { createdClient ->
+        val activeBrokerUrl = brokerConfig.brokerUrl
+        val clientId = runtimeConfig.mqttTopicConfig.clientId(runtimeConfig.busCode)
+        val client = mqttClient ?: MqttClient(activeBrokerUrl, clientId, MemoryPersistence()).also { createdClient ->
             mqttClient = createdClient
             createdClient.setCallback(createCallback())
         }
@@ -123,12 +172,17 @@ class MqttTelemetryClient @Inject constructor(
     }
 
     private fun createConnectOptions(): MqttConnectOptions {
+        val config = brokerConfig
+        val willPayload = """{"status":"offline","bus_code":"${runtimeConfig.busCode}"}"""
         return MqttConnectOptions().apply {
-            isCleanSession = false
+            userName = config.username
+            password = config.password.toCharArray()
+            isCleanSession = config.cleanSession
             connectionTimeout = CONNECTION_TIMEOUT_SECONDS
             keepAliveInterval = KEEP_ALIVE_SECONDS
             maxInflight = MAX_IN_FLIGHT_MESSAGES
-            isAutomaticReconnect = true
+            isAutomaticReconnect = false
+            setWill(runtimeConfig.mqttTopicConfig.statusTopic, willPayload.toByteArray(), STATUS_QOS, true)
         }
     }
 
@@ -136,8 +190,9 @@ class MqttTelemetryClient @Inject constructor(
         return object : MqttCallbackExtended {
             override fun connectComplete(reconnect: Boolean, serverURI: String?) {
                 _connectionState.value = true
-                logger.log("MQTT", "Connected to MQTT broker (reconnect=$reconnect)")
+                logger.log("MQTT", "Connected to MQTT broker ${serverURI ?: brokerConfig.brokerUrl} (reconnect=$reconnect)")
                 subscribeToTopics()
+                publishStatusOnline()
             }
 
             override fun connectionLost(cause: Throwable?) {
@@ -150,6 +205,19 @@ class MqttTelemetryClient @Inject constructor(
                 logger.log("MQTT", "Message arrived on [$topic]: $payload")
 
                 when {
+                    topic == runtimeConfig.mqttTopicConfig.busTopic(runtimeConfig.busCode) -> {
+                        _paymentPushFlow.tryEmit(payload)
+                    }
+                    topic == runtimeConfig.mqttTopicConfig.notificationTopic(runtimeConfig.hardwareId) -> {
+                        val action = extractRemoteAction(payload) ?: "notification"
+                        _remoteCommandFlow.tryEmit(Pair(action, payload))
+                    }
+                    topic == runtimeConfig.mqttTopicConfig.commandTopic -> {
+                        if (isCommandForActiveBus(payload)) {
+                            val action = extractRemoteAction(payload) ?: "bus_command"
+                            _remoteCommandFlow.tryEmit(Pair(action, payload))
+                        }
+                    }
                     topic?.contains("/payment/response") == true -> {
                         _paymentPushFlow.tryEmit(payload)
                     }
@@ -167,8 +235,11 @@ class MqttTelemetryClient @Inject constructor(
 
     private fun subscribeToTopics() {
         try {
-            mqttClient?.subscribe("bus/validator/$deviceId/payment/response", 1)
-            mqttClient?.subscribe("bus/validator/$deviceId/command", 1)
+            val topics = runtimeConfig.mqttTopicConfig
+            mqttClient?.subscribe(topics.busTopic(runtimeConfig.busCode), LEGACY_TOPIC_QOS)
+            mqttClient?.subscribe(topics.notificationTopic(runtimeConfig.hardwareId), LEGACY_TOPIC_QOS)
+            mqttClient?.subscribe(topics.commandTopic, LEGACY_TOPIC_QOS)
+            mqttClient?.subscribe(topics.whitelistTopic(), LEGACY_TOPIC_QOS)
             logger.log("MQTT", "Subscribed to MQTT topics successfully")
         } catch (e: Exception) {
             logger.log("MQTT", "Subscription error: ${e.message}", isError = true)
@@ -182,7 +253,7 @@ class MqttTelemetryClient @Inject constructor(
         }
 
         return publishJson(
-            topic = "bus/validator/$deviceId/location",
+            topic = runtimeConfig.mqttTopicConfig.busTopic(runtimeConfig.busCode),
             payload = payload.toJson()
         )
     }
@@ -193,7 +264,7 @@ class MqttTelemetryClient @Inject constructor(
         }
 
         try {
-            val topic = "bus/validator/$deviceId/telemetry"
+            val topic = runtimeConfig.mqttTopicConfig.busTopic(runtimeConfig.busCode)
             val payload = """
                 {
                     "lat": ${telemetry.latitude},
@@ -261,11 +332,45 @@ class MqttTelemetryClient @Inject constructor(
         }.toString()
     }
 
+    private fun publishStatusOnline() {
+        val client = mqttClient ?: return
+        if (!client.isConnected) return
+        runCatching {
+            val payload = """{"status":"online","bus_code":"${runtimeConfig.busCode}"}"""
+            val message = MqttMessage(payload.toByteArray()).apply {
+                qos = STATUS_QOS
+                isRetained = true
+            }
+            client.publish(runtimeConfig.mqttTopicConfig.statusTopic, message)
+        }.onFailure { error ->
+            logger.log("MQTT", "Publish online status failed: ${error.message}", isError = true)
+        }
+    }
+
+    private fun extractRemoteAction(payload: String): String? {
+        val actionPattern = Regex(""""(?:action|cmd|command)"\s*:\s*"([^"]+)"""")
+        return actionPattern.find(payload)?.groupValues?.getOrNull(1)
+            ?: payload.substringBefore(":", "").takeIf { it.isNotBlank() && it.length < payload.length }
+    }
+
+    private fun isCommandForActiveBus(payload: String): Boolean {
+        val busCodePattern = Regex(""""bus_code"\s*:\s*"([^"]+)"""")
+        val targetBusCode = busCodePattern.find(payload)?.groupValues?.getOrNull(1) ?: return true
+        return targetBusCode == runtimeConfig.busCode
+    }
+
     private companion object {
+        val DEFAULT_BROKER_CONFIG = MqttBrokerConfig(
+            host = "mqtt.jsa2.host",
+            port = 12345,
+            transport = MqttTransport.TCP
+        )
         const val CONNECTION_TIMEOUT_SECONDS = 10
         const val KEEP_ALIVE_SECONDS = 20
         const val MAX_IN_FLIGHT_MESSAGES = 20
         const val LOCATION_QOS = 1
+        const val LEGACY_TOPIC_QOS = 0
+        const val STATUS_QOS = 1
         const val INITIAL_RECONNECT_DELAY_MS = 1_000L
         const val MAX_RECONNECT_DELAY_MS = 30_000L
         const val CONNECTED_CHECK_INTERVAL_MS = 10_000L

@@ -14,6 +14,7 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.enterprise.busvalidator.core.common.AppVersionProvider
+import com.enterprise.busvalidator.core.model.ApiEnvironment
 import com.enterprise.busvalidator.core.model.OperatorPresets
 import com.enterprise.busvalidator.core.model.OperatorSubService
 import com.enterprise.busvalidator.core.model.TerminalConfig
@@ -23,14 +24,17 @@ import com.enterprise.busvalidator.core.model.VendorDeviceModel
 fun SettingsScreen(
     currentConfig: TerminalConfig?,
     currentVendor: VendorDeviceModel,
+    currentApiEnvironment: ApiEnvironment,
     onOperatorSubServiceSelected: (OperatorSubService) -> Unit,
+    onApiEnvironmentSelected: (ApiEnvironment) -> Unit,
     onVendorSelected: (VendorDeviceModel) -> Unit,
     onOpenDiagnosticClick: () -> Unit,
     onBackClick: () -> Unit
 ) {
     val context = LocalContext.current
     val appVersion = remember { AppVersionProvider.getAppVersion(context) }
-    val activeConfig = currentConfig?.operatorConfig ?: OperatorPresets.BISKITA_BEKASI
+    val activeConfig = (currentConfig?.operatorConfig ?: OperatorPresets.BISKITA_BEKASI)
+        .withApiEnvironment(currentApiEnvironment)
 
     LazyColumn(
         modifier = Modifier
@@ -62,7 +66,9 @@ fun SettingsScreen(
                 Column(modifier = Modifier.padding(16.dp)) {
                     Text(text = "Pilih Operator Transit & Layanan", color = Color.White, fontWeight = FontWeight.Bold, fontSize = 16.sp)
                     Text(text = "Aktif: ${activeConfig.operatorName} (${activeConfig.subService.name})", color = Color(0xFF38BDF8), fontSize = 14.sp, fontWeight = FontWeight.Bold)
+                    Text(text = "Environment: ${activeConfig.apiEnvironment.name}", color = Color(0xFF38BDF8), fontSize = 12.sp)
                     Text(text = "Base URL: ${activeConfig.baseUrl}", color = Color.LightGray, fontSize = 11.sp)
+                    Text(text = "MQTT: ${activeConfig.mqttBrokerConfig.brokerUrl}", color = Color.LightGray, fontSize = 11.sp)
                     Text(
                         text = "Tarif Base: Rp ${activeConfig.fareRulePolicy.baseFare} | Pelajar: Rp ${activeConfig.fareRulePolicy.studentFare} | Lansia: Rp ${activeConfig.fareRulePolicy.seniorCitizenFare}",
                         color = Color.Yellow,
@@ -70,6 +76,18 @@ fun SettingsScreen(
                     )
 
                     Spacer(modifier = Modifier.height(12.dp))
+
+                    Text(text = "API Environment:", color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 4.dp)) {
+                        OperatorButton("PROD", currentApiEnvironment == ApiEnvironment.PRODUCTION) {
+                            onApiEnvironmentSelected(ApiEnvironment.PRODUCTION)
+                        }
+                        OperatorButton("DEV", currentApiEnvironment == ApiEnvironment.DEVELOPMENT) {
+                            onApiEnvironmentSelected(ApiEnvironment.DEVELOPMENT)
+                        }
+                    }
+
+                    Spacer(modifier = Modifier.height(8.dp))
 
                     Text(text = "Biskita Transit:", color = Color.LightGray, fontSize = 12.sp, fontWeight = FontWeight.Bold)
                     Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.padding(vertical = 4.dp)) {

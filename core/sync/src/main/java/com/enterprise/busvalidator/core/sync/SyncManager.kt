@@ -43,6 +43,10 @@ class SyncManager @Inject constructor(
                 batchId = batchId,
                 transactions = unsyncedList.map { it.toSyncItem() }
             )
+            if (result.shouldRetry) {
+                logger.log("SyncManager", "Sync deferred: ${result.retryableFailureReason}", isError = true)
+                return@withContext false
+            }
 
             val unsyncedIds = unsyncedList.map { it.transactionId }.toSet()
             val maxLocalCounter = transactionDao.getMaxSuccessfulTransactionCounter()

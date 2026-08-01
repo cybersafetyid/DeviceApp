@@ -10,8 +10,11 @@ import com.enterprise.busvalidator.core.database.TransactionDao
 import com.enterprise.busvalidator.core.devicemanager.InitStep
 import com.enterprise.busvalidator.core.devicemanager.InitializationPipelineManager
 import com.enterprise.busvalidator.core.hardware.drivers.VendorDriverFactory
+import com.enterprise.busvalidator.core.hardware.api.NfcDriver
 import com.enterprise.busvalidator.core.location.BusLocationManager
 import com.enterprise.busvalidator.core.model.*
+import com.enterprise.busvalidator.core.network.MqttTelemetryClient
+import com.enterprise.busvalidator.core.network.OperatorRuntimeConfigStore
 import com.enterprise.busvalidator.core.payment.PaymentEngine
 import com.enterprise.busvalidator.core.security.RuntimePermissionProvisioner
 import com.enterprise.busvalidator.feature.diagnostic.HardwareDiagnosticScreen
@@ -38,12 +41,16 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var paymentEngine: PaymentEngine
     @Inject lateinit var driverFactory: VendorDriverFactory
     @Inject lateinit var locationManager: BusLocationManager
+    @Inject lateinit var mqttTelemetryClient: MqttTelemetryClient
+    @Inject lateinit var runtimeConfigStore: OperatorRuntimeConfigStore
     @Inject lateinit var transactionDao: TransactionDao
     @Inject lateinit var permissionProvisioner: RuntimePermissionProvisioner
 
     private val currentScreen = mutableStateOf(Screen.SPLASH)
     private val uiTxState = mutableStateOf<UiTransactionState>(UiTransactionState.Idle)
     private var activeOperatorConfig: OperatorConfig = OperatorPresets.BISKITA_BEKASI
+    private var activeApiEnvironment: ApiEnvironment = ApiEnvironment.PRODUCTION
+    private var nfcDriver: NfcDriver? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -51,6 +58,8 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             permissionProvisioner.ensureProvisioned()
             locationManager.startLocationTracking()
+            runtimeConfigStore.setActiveOperator(activeOperatorConfig)
+            mqttTelemetryClient.configureBroker(activeOperatorConfig.mqttBrokerConfig)
             initPipeline.runInitializationPipeline(activeOperatorConfig)
         }
 
@@ -73,6 +82,8 @@ class MainActivity : ComponentActivity() {
                 when (val step = initStep) {
                     is InitStep.Completed -> {
                         loadedConfig = step.config
+                        mqttTelemetryClient.configureRuntime(step.config)
+                        startPhysicalCardListener(step.config)
                         delay(400)
                         currentScreen.value = Screen.DASHBOARD
                     }
@@ -96,15 +107,30 @@ class MainActivity : ComponentActivity() {
                         uiState = uiTxState.value,
                         onTestTap = { bankIssuer ->
                             performTestCardTap(bankIssuer, loadedConfig)
-                        }
+                        },
+                        showSimulatorActions = BuildConfig.DEBUG
                     )
                 }
                 Screen.SETTINGS -> {
                     SettingsScreen(
                         currentConfig = loadedConfig,
                         currentVendor = driverFactory.getActiveDeviceModel(),
+                        currentApiEnvironment = activeApiEnvironment,
                         onOperatorSubServiceSelected = { subService ->
-                            activeOperatorConfig = OperatorPresets.getPreset(subService)
+                            activeOperatorConfig = OperatorPresets.getPreset(subService, activeApiEnvironment)
+                            runtimeConfigStore.setActiveOperator(activeOperatorConfig)
+                            mqttTelemetryClient.configureBroker(activeOperatorConfig.mqttBrokerConfig)
+                            currentScreen.value = Screen.SPLASH
+                            lifecycleScope.launch {
+                                permissionProvisioner.ensureProvisioned()
+                                initPipeline.runInitializationPipeline(activeOperatorConfig)
+                            }
+                        },
+                        onApiEnvironmentSelected = { environment ->
+                            activeApiEnvironment = environment
+                            activeOperatorConfig = activeOperatorConfig.withApiEnvironment(environment)
+                            runtimeConfigStore.setActiveOperator(activeOperatorConfig)
+                            mqttTelemetryClient.configureBroker(activeOperatorConfig.mqttBrokerConfig)
                             currentScreen.value = Screen.SPLASH
                             lifecycleScope.launch {
                                 permissionProvisioner.ensureProvisioned()
@@ -157,6 +183,57 @@ class MainActivity : ComponentActivity() {
             delay(3000)
             uiTxState.value = UiTransactionState.Idle
         }
+    }
+
+    private fun startPhysicalCardListener(terminalConfig: TerminalConfig) {
+        runCatching {
+            nfcDriver?.stopCardListening()
+            val driver = driverFactory.createNfcDriver()
+            nfcDriver = driver
+            if (!driver.isHardwareAvailable()) return
+
+            driver.startCardListening { cardUid, apduHandler ->
+                handlePhysicalCardTap(cardUid, apduHandler, terminalConfig)
+            }
+        }.onFailure {
+            uiTxState.value = UiTransactionState.UntrustedTimeError("NFC initialization failed: ${it.message}")
+        }
+    }
+
+    private fun handlePhysicalCardTap(
+        cardUid: String,
+        apduHandler: (ByteArray) -> ByteArray,
+        terminalConfig: TerminalConfig
+    ) {
+        lifecycleScope.launch {
+            uiTxState.value = UiTransactionState.Processing(cardUid)
+            val record = paymentEngine.processCardApduFlow(
+                cardUid = cardUid,
+                fareRulePolicy = terminalConfig.operatorConfig.fareRulePolicy,
+                routeCode = terminalConfig.routeCode,
+                samDriver = driverFactory.createSamDriver(),
+                transmitCardApdu = apduHandler
+            )
+
+            uiTxState.value = when (record.status) {
+                TransactionStatus.SUCCESS -> UiTransactionState.Success(record)
+                TransactionStatus.CARD_ALREADY_TAPPED -> UiTransactionState.CardAlreadyTapped(cardUid)
+                TransactionStatus.INSUFFICIENT_BALANCE -> UiTransactionState.InsufficientBalance(
+                    balance = record.finalBalance,
+                    required = terminalConfig.baseFare
+                )
+                else -> UiTransactionState.UntrustedTimeError(record.status.name)
+            }
+
+            delay(3000)
+            uiTxState.value = UiTransactionState.Idle
+        }
+    }
+
+    override fun onDestroy() {
+        nfcDriver?.stopCardListening()
+        nfcDriver = null
+        super.onDestroy()
     }
 
     /**

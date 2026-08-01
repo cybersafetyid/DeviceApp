@@ -46,7 +46,7 @@ class NativeSecurityVault @Inject constructor(
             String(decryptedBytes, Charsets.UTF_8)
         } catch (e: Exception) {
             logger.log("SecurityVault", "Error decrypting BASEURL: ${e.message}", isError = true)
-            "https://api.busvalidator.enterprise.com/v1"
+            throw IllegalStateException("Secure BASEURL unavailable and no operator BASEURL was provided", e)
         }
     }
 

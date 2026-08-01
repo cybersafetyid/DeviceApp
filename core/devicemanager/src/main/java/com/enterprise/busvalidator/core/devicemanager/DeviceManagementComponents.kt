@@ -2,9 +2,13 @@ package com.enterprise.busvalidator.core.devicemanager
 
 import com.enterprise.busvalidator.core.model.TerminalConfig
 import com.enterprise.busvalidator.core.devicemanager.ota.AppUpdateManager
+import com.enterprise.busvalidator.core.devicemanager.ota.LegacyAppUpdateCoordinator
+import com.enterprise.busvalidator.core.devicemanager.ota.LegacyAppUpdateResult
 import com.enterprise.busvalidator.core.devicemanager.ota.OtaCommandParser
 import com.enterprise.busvalidator.core.devicemanager.ota.OtaUpdateResult
+import com.enterprise.busvalidator.core.network.TerminalBootstrapApi
 import com.enterprise.busvalidator.core.network.MqttTelemetryClient
+import com.enterprise.busvalidator.core.network.OperatorRuntimeConfigStore
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.enterprise.busvalidator.core.security.MultiSourceTimeSyncEngine
 import com.enterprise.busvalidator.core.security.SuManager
@@ -59,6 +63,8 @@ sealed class InitStep {
 class InitializationPipelineManager @Inject constructor(
     private val suManager: SuManager,
     private val timeSyncEngine: MultiSourceTimeSyncEngine,
+    private val terminalBootstrapApi: TerminalBootstrapApi,
+    private val runtimeConfigStore: OperatorRuntimeConfigStore,
     private val logger: EncryptedLogger
 ) {
     private val _initFlow = MutableStateFlow<InitStep>(InitStep.Progress("Starting Security Checks...", 10))
@@ -68,6 +74,7 @@ class InitializationPipelineManager @Inject constructor(
         activeOperatorConfig: com.enterprise.busvalidator.core.model.OperatorConfig = com.enterprise.busvalidator.core.model.OperatorPresets.BISKITA_BEKASI
     ) = withContext(Dispatchers.IO) {
         try {
+            runtimeConfigStore.setActiveOperator(activeOperatorConfig)
             _initFlow.value = InitStep.Progress("Verifying Root & Hardware Keystore...", 20)
             delay(300)
 
@@ -80,15 +87,16 @@ class InitializationPipelineManager @Inject constructor(
             _initFlow.value = InitStep.Progress("Loading Operator Profile (${activeOperatorConfig.operatorName})...", 80)
             delay(400)
 
-            val terminalConfig = TerminalConfig(
-                merchantId = "MID-${activeOperatorConfig.brand.name}-01",
-                terminalId = "TID-BUS1049-VAL01",
-                pinCode = "889900",
-                processingCode = "000001",
-                samId = "SAM-CARD-99102",
-                marriageCode = "MARRIAGE-BUS-1049",
-                operatorConfig = activeOperatorConfig
-            )
+            val terminalConfig = runCatching {
+                terminalBootstrapApi.fetchTerminalBootstrap(activeOperatorConfig).terminalConfig
+            }.getOrElse { error ->
+                logger.log(
+                    "InitPipeline",
+                    "Terminal bootstrap API failed: ${error.message}",
+                    isError = true
+                )
+                throw IllegalStateException("Terminal bootstrap API failed: ${error.message}", error)
+            }
 
             _initFlow.value = InitStep.Progress("Connecting TLS Telemetry to ${activeOperatorConfig.baseUrl}...", 95)
             delay(300)
@@ -110,7 +118,8 @@ class RemoteControlManager @Inject constructor(
     private val suManager: SuManager,
     private val logger: EncryptedLogger,
     private val mqttTelemetryClient: MqttTelemetryClient,
-    private val appUpdateManager: AppUpdateManager
+    private val appUpdateManager: AppUpdateManager,
+    private val legacyAppUpdateCoordinator: LegacyAppUpdateCoordinator
 ) {
     private var remoteCommandJob: Job? = null
 
@@ -126,6 +135,7 @@ class RemoteControlManager @Inject constructor(
                     "cmd_reboot" -> suManager.rebootDevice()
                     "cmd_restart_app" -> suManager.restartApp("com.enterprise.busvalidator")
                     "cmd_ota_update" -> executeOtaUpdate(params)
+                    "cmd_check_app_update" -> executeLegacyAppUpdate(params)
                     "cmd_clear_cache" -> System.gc()
                     else -> logger.log("RemoteControl", "Unknown command: $action")
                 }
@@ -150,5 +160,59 @@ class RemoteControlManager @Inject constructor(
                 isError = true
             )
         }
+    }
+
+    private suspend fun executeLegacyAppUpdate(params: String) {
+        val manifestUrl = extractValue(params, "url", "manifestUrl", "updateUrl")
+        val baseUrl = extractValue(params, "baseUrl", "base_url")
+        if (manifestUrl.isNullOrBlank() && baseUrl.isNullOrBlank()) {
+            logger.log(
+                "RemoteControl",
+                "App update command requires baseUrl or url/manifestUrl/updateUrl",
+                isError = true
+            )
+            return
+        }
+
+        val updateResult = if (!baseUrl.isNullOrBlank()) {
+            legacyAppUpdateCoordinator.checkAndInstallFromBaseUrl(baseUrl)
+        } else {
+            legacyAppUpdateCoordinator.checkAndInstall(manifestUrl!!)
+        }
+
+        when (val result = updateResult) {
+            is LegacyAppUpdateResult.NoNewVersion -> logger.log(
+                "RemoteControl",
+                "No app update available: versionCode=${result.manifest.versionCode}"
+            )
+            is LegacyAppUpdateResult.Blocked -> logger.log(
+                "RemoteControl",
+                "App update blocked: ${result.reason}",
+                isError = true
+            )
+            is LegacyAppUpdateResult.Installed -> logger.log(
+                "RemoteControl",
+                "App update installed: versionCode=${result.otaResult.versionCode}"
+            )
+            is LegacyAppUpdateResult.Failed -> logger.log(
+                "RemoteControl",
+                "App update failed: ${result.reason}",
+                isError = true
+            )
+        }
+    }
+
+    private fun extractValue(params: String, vararg keys: String): String? {
+        val trimmed = params.trim()
+        if (trimmed.isBlank()) return null
+        keys.forEach { key ->
+            val jsonMatch = Regex("\"$key\"\\s*:\\s*\"([^\"]+)\"", RegexOption.IGNORE_CASE)
+                .find(trimmed)
+            if (jsonMatch != null) return jsonMatch.groupValues[1]
+            val pairMatch = Regex("(?:^|[;\\n])\\s*$key\\s*=\\s*([^;\\n]+)", RegexOption.IGNORE_CASE)
+                .find(trimmed)
+            if (pairMatch != null) return pairMatch.groupValues[1].trim()
+        }
+        return if (trimmed.startsWith("http://") || trimmed.startsWith("https://")) trimmed else null
     }
 }

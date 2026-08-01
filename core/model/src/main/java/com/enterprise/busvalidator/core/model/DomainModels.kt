@@ -40,6 +40,65 @@ data class FareRulePolicy(
     val freeTransferWindowMinutes: Int = 0
 )
 
+enum class ApiEnvironment {
+    PRODUCTION,
+    DEVELOPMENT
+}
+
+enum class MqttTransport(val scheme: String) {
+    TCP("tcp"),
+    SSL("ssl")
+}
+
+data class MqttBrokerConfig(
+    val host: String,
+    val port: Int,
+    val transport: MqttTransport = MqttTransport.TCP,
+    val username: String = "bv",
+    val password: String = "1sampai8",
+    val cleanSession: Boolean = true
+) {
+    val brokerUrl: String get() = "${transport.scheme}://$host:$port"
+}
+
+data class MqttTopicConfig(
+    val regionName: String,
+    val busRoot: String = "bv",
+    val notificationRoot: String = "notif",
+    val commandTopic: String = "bus/command",
+    val statusTopic: String = "bus/status",
+    val whitelistNotificationSuffix: String = "notif"
+) {
+    fun busTopic(busCode: String): String = "$busRoot/$regionName/${busCode.sanitizeMqttTopicPart()}"
+    fun notificationTopic(hardwareId: String): String = "$notificationRoot/${hardwareId.sanitizeMqttTopicPart()}"
+    fun whitelistTopic(): String = "whitelist/$regionName/$whitelistNotificationSuffix"
+    fun clientId(busCode: String): String = "${regionName}_${busCode.sanitizeMqttClientIdPart()}"
+}
+
+data class OperatorApiBaseUrls(
+    val production: String,
+    val development: String
+) {
+    fun forEnvironment(environment: ApiEnvironment): String {
+        return when (environment) {
+            ApiEnvironment.PRODUCTION -> production
+            ApiEnvironment.DEVELOPMENT -> development
+        }
+    }
+}
+
+data class OperatorMqttBrokerConfigs(
+    val production: MqttBrokerConfig,
+    val development: MqttBrokerConfig
+) {
+    fun forEnvironment(environment: ApiEnvironment): MqttBrokerConfig {
+        return when (environment) {
+            ApiEnvironment.PRODUCTION -> production
+            ApiEnvironment.DEVELOPMENT -> development
+        }
+    }
+}
+
 /**
  * Complete Operator Configuration Profile.
  */
@@ -47,22 +106,52 @@ data class OperatorConfig(
     val brand: OperatorBrand,
     val subService: OperatorSubService,
     val operatorName: String,
-    val baseUrl: String,
+    val legacyRegionName: String,
+    val apiBaseUrls: OperatorApiBaseUrls,
+    val mqttBrokerConfigs: OperatorMqttBrokerConfigs,
+    val apiEnvironment: ApiEnvironment = ApiEnvironment.PRODUCTION,
     val defaultRouteCode: String,
     val defaultRouteName: String,
     val supportedHardwareModels: List<VendorDeviceModel>,
     val fareRulePolicy: FareRulePolicy
-)
+) {
+    val baseUrl: String get() = apiBaseUrls.forEnvironment(apiEnvironment)
+    val mqttBrokerConfig: MqttBrokerConfig get() = mqttBrokerConfigs.forEnvironment(apiEnvironment)
+
+    fun withApiEnvironment(environment: ApiEnvironment): OperatorConfig {
+        return copy(apiEnvironment = environment)
+    }
+}
 
 /**
  * Predefined Operator Configuration Presets.
  */
 object OperatorPresets {
+    private const val DEV_BISKITA_BASE_URL = "https://dev-buskita.karcisku.id/c_bus/"
+    private const val DEV_CITRA_RAYA_BASE_URL = "https://afc-citraraya.net2software.net/c_bus/"
+    private const val DEV_SURABAYA_BASE_URL = "https://dev-suroboyo.net2software.net/c_bus/"
+
+    private const val PROD_BISKITA_BEKASI_BASE_URL = "https://transpatriot.karcisku.id/c_bus/"
+    private const val PROD_BISKITA_DEPOK_BASE_URL = "https://transdepok.karcisku.id/c_bus/"
+    private const val PROD_BISKITA_BOGOR_BASE_URL = "https://kabbogor.karcisku.id/c_bus/"
+    private const val PROD_CITRA_RAYA_BASE_URL = "https://buscitrarayatgr.karcisku.id/c_bus/"
+    private const val PROD_CITRA_MAJA_BASE_URL = "https://buscitra.karcisku.id/c_bus/"
+    private const val PROD_SURABAYA_BASE_URL = "https://suroboyo-bus.jaring.host/c_bus/"
+    private val LEGACY_MQTT_BROKERS = OperatorMqttBrokerConfigs(
+        production = MqttBrokerConfig(host = "mqtt.jsa2.host", port = 12345),
+        development = MqttBrokerConfig(host = "192.168.66.201", port = 1883)
+    )
+
     val BISKITA_BEKASI = OperatorConfig(
         brand = OperatorBrand.BISKITA,
         subService = OperatorSubService.BISKITA_BEKASI,
         operatorName = "BISKITA BEKASI",
-        baseUrl = "https://api.biskita-bekasi.transindo.id/v1",
+        legacyRegionName = "bekasi",
+        apiBaseUrls = OperatorApiBaseUrls(
+            production = PROD_BISKITA_BEKASI_BASE_URL,
+            development = DEV_BISKITA_BASE_URL
+        ),
+        mqttBrokerConfigs = LEGACY_MQTT_BROKERS,
         defaultRouteCode = "BK-01",
         defaultRouteName = "Terminal Bekasi - Harapan Indah",
         supportedHardwareModels = listOf(VendorDeviceModel.E60Q, VendorDeviceModel.E60V2),
@@ -79,7 +168,12 @@ object OperatorPresets {
         brand = OperatorBrand.BISKITA,
         subService = OperatorSubService.BISKITA_DEPOK,
         operatorName = "BISKITA DEPOK",
-        baseUrl = "https://api.biskita-depok.transindo.id/v1",
+        legacyRegionName = "depok",
+        apiBaseUrls = OperatorApiBaseUrls(
+            production = PROD_BISKITA_DEPOK_BASE_URL,
+            development = DEV_BISKITA_BASE_URL
+        ),
+        mqttBrokerConfigs = LEGACY_MQTT_BROKERS,
         defaultRouteCode = "DP-01",
         defaultRouteName = "Terminal Margonda - Stasiun LRT Harjamukti",
         supportedHardwareModels = listOf(VendorDeviceModel.E60V2),
@@ -96,7 +190,12 @@ object OperatorPresets {
         brand = OperatorBrand.BISKITA,
         subService = OperatorSubService.BISKITA_BOGOR,
         operatorName = "BISKITA BOGOR",
-        baseUrl = "https://api.biskita-bogor.transindo.id/v1",
+        legacyRegionName = "bogor",
+        apiBaseUrls = OperatorApiBaseUrls(
+            production = PROD_BISKITA_BOGOR_BASE_URL,
+            development = DEV_BISKITA_BASE_URL
+        ),
+        mqttBrokerConfigs = LEGACY_MQTT_BROKERS,
         defaultRouteCode = "BG-02",
         defaultRouteName = "Terminal Bubulak - Ciawi",
         supportedHardwareModels = listOf(VendorDeviceModel.E60Q, VendorDeviceModel.E60V2),
@@ -113,7 +212,12 @@ object OperatorPresets {
         brand = OperatorBrand.CITRA,
         subService = OperatorSubService.CITRA_RAYA,
         operatorName = "CITRA RAYA SHUTTLE",
-        baseUrl = "https://api.citraraya-shuttle.co.id/v1",
+        legacyRegionName = "citraraya",
+        apiBaseUrls = OperatorApiBaseUrls(
+            production = PROD_CITRA_RAYA_BASE_URL,
+            development = DEV_CITRA_RAYA_BASE_URL
+        ),
+        mqttBrokerConfigs = LEGACY_MQTT_BROKERS,
         defaultRouteCode = "CR-01",
         defaultRouteName = "Citra Raya Shuttle - EcoPlaza Loop",
         supportedHardwareModels = listOf(VendorDeviceModel.E60Q, VendorDeviceModel.E60V2),
@@ -130,7 +234,12 @@ object OperatorPresets {
         brand = OperatorBrand.CITRA,
         subService = OperatorSubService.CITRA_MAJA,
         operatorName = "CITRA MAJA SHUTTLE",
-        baseUrl = "https://api.citramaja-shuttle.co.id/v1",
+        legacyRegionName = "citramaja",
+        apiBaseUrls = OperatorApiBaseUrls(
+            production = PROD_CITRA_MAJA_BASE_URL,
+            development = DEV_BISKITA_BASE_URL
+        ),
+        mqttBrokerConfigs = LEGACY_MQTT_BROKERS,
         defaultRouteCode = "CM-01",
         defaultRouteName = "Stasiun Maja - Citra Maja City Loop",
         supportedHardwareModels = listOf(VendorDeviceModel.E60Q, VendorDeviceModel.E60V2),
@@ -147,7 +256,12 @@ object OperatorPresets {
         brand = OperatorBrand.SURABAYA,
         subService = OperatorSubService.SURABAYA_WARA_WIRI,
         operatorName = "WARA WIRI SURABAYA",
-        baseUrl = "https://api-warawiri.surabaya.go.id/v1",
+        legacyRegionName = "sby",
+        apiBaseUrls = OperatorApiBaseUrls(
+            production = PROD_SURABAYA_BASE_URL,
+            development = DEV_SURABAYA_BASE_URL
+        ),
+        mqttBrokerConfigs = LEGACY_MQTT_BROKERS,
         defaultRouteCode = "FD-01",
         defaultRouteName = "Wara Wiri Feeder Subang - Joyoboyo",
         supportedHardwareModels = listOf(VendorDeviceModel.E60Q),
@@ -165,7 +279,12 @@ object OperatorPresets {
         brand = OperatorBrand.SURABAYA,
         subService = OperatorSubService.SURABAYA_BUS,
         operatorName = "BUS SURABAYA (SUROBOYO BUS)",
-        baseUrl = "https://api-suroboyobus.surabaya.go.id/v1",
+        legacyRegionName = "sby",
+        apiBaseUrls = OperatorApiBaseUrls(
+            production = PROD_SURABAYA_BASE_URL,
+            development = DEV_SURABAYA_BASE_URL
+        ),
+        mqttBrokerConfigs = LEGACY_MQTT_BROKERS,
         defaultRouteCode = "SB-01",
         defaultRouteName = "Suroboyo Bus Purabaya - Rajawali",
         supportedHardwareModels = listOf(VendorDeviceModel.Q6),
@@ -179,7 +298,10 @@ object OperatorPresets {
         )
     )
 
-    fun getPreset(subService: OperatorSubService): OperatorConfig {
+    fun getPreset(
+        subService: OperatorSubService,
+        apiEnvironment: ApiEnvironment = ApiEnvironment.PRODUCTION
+    ): OperatorConfig {
         return when (subService) {
             OperatorSubService.BISKITA_BEKASI -> BISKITA_BEKASI
             OperatorSubService.BISKITA_DEPOK -> BISKITA_DEPOK
@@ -188,7 +310,7 @@ object OperatorPresets {
             OperatorSubService.CITRA_MAJA -> CITRA_MAJA
             OperatorSubService.SURABAYA_WARA_WIRI -> SURABAYA_WARA_WIRI
             OperatorSubService.SURABAYA_BUS -> SURABAYA_BUS
-        }
+        }.withApiEnvironment(apiEnvironment)
     }
 }
 
@@ -202,15 +324,68 @@ data class TerminalConfig(
     val processingCode: String,
     val samId: String,
     val marriageCode: String,
+    val hardwareId: String = DeviceIdentity.DEFAULT_DEVICE_ID,
     val tapMode: TapMode = TapMode.TAP_IN_OUT,
     val operatorConfig: OperatorConfig = OperatorPresets.BISKITA_BEKASI,
     val routeCode: String = operatorConfig.defaultRouteCode,
     val routeName: String = operatorConfig.defaultRouteName,
-    val busCode: String = "BUS-1049",
-    val baseFare: Long = operatorConfig.fareRulePolicy.baseFare
+    val busCode: String = DeviceIdentity.UNCONFIGURED_BUS_CODE,
+    val baseFare: Long = operatorConfig.fareRulePolicy.baseFare,
+    val trip: String = "1",
+    val operationalCode: String = "",
+    val operationalStart: String = "",
+    val operationalEnd: String = "",
+    val currentHalte: String = "",
+    val startLatitude: Double? = null,
+    val startLongitude: Double? = null,
+    val endLatitude: Double? = null,
+    val endLongitude: Double? = null,
+    val qrisEnabled: Boolean = false,
+    val rawQris: String = "",
+    val qrisMerchantId: String = "",
+    val qrisTerminalId: String = "",
+    val terminalCode: String = "",
+    val vehiclePlate: String = "",
+    val transportationType: String = "",
+    val configVersion: String = "",
+    val fareFileName: String = "",
+    val fareFileUrl: String = "",
+    val serverTime: String = "",
+    val validationRadiusMeters: Double? = null,
+    val direction: String = "",
+    val doubleTapAllowed: Boolean? = null,
+    val locationLimitSeconds: Int? = null,
+    val cityCode: String = "",
+    val cityName: String = "",
+    val corridorCode: String = "",
+    val corridorName: String = "",
+    val stopCode: String = "",
+    val stopName: String = "",
+    val cycleTimeSeconds: Int? = null,
+    val cardIssuers: Map<String, CardIssuerConfig> = emptyMap()
 ) {
     val operatorName: String get() = operatorConfig.operatorName
+    val mqttTopicConfig: MqttTopicConfig
+        get() = MqttTopicConfig(regionName = operatorConfig.legacyRegionName)
+
+    fun issuerConfigFor(bankIssuer: String): CardIssuerConfig? {
+        return cardIssuers[bankIssuer.normalizedIssuerKey()]
+    }
 }
+
+data class CardIssuerConfig(
+    val issuerName: String,
+    val merchantId: String = "",
+    val terminalId: String = "",
+    val slot: String = "",
+    val isEnabled: Boolean = false,
+    val pinCode: String = "",
+    val processingCode: String = "",
+    val samId: String = "",
+    val marriageCodes: List<String> = emptyList(),
+    val checkTimeSeconds: Int? = null,
+    val validTimeSeconds: Int? = null
+)
 
 enum class TapMode {
     TAP_IN_ONLY,
@@ -238,8 +413,20 @@ enum class TimeConfidenceState {
 }
 
 object DeviceIdentity {
-    const val DEFAULT_DEVICE_ID = "BUS-1049-VAL01"
+    const val UNCONFIGURED_BUS_CODE = "UNCONFIGURED"
+    const val DEFAULT_DEVICE_ID = "UNCONFIGURED-DEVICE"
 }
+
+private fun String.sanitizeMqttTopicPart(): String {
+    return replace(Regex("[\\u0000-\\u001F#+]"), "_")
+}
+
+private fun String.sanitizeMqttClientIdPart(): String {
+    return replace(Regex("[^a-zA-Z0-9_]"), "")
+        .ifBlank { DeviceIdentity.DEFAULT_DEVICE_ID.replace(Regex("[^a-zA-Z0-9_]"), "") }
+}
+
+fun String.normalizedIssuerKey(): String = trim().uppercase().replace(Regex("[^A-Z0-9]"), "")
 
 data class BusLocationSnapshot(
     val deviceId: String = DeviceIdentity.DEFAULT_DEVICE_ID,
@@ -406,9 +593,11 @@ data class TransactionSyncItem(
 data class TransactionSyncResult(
     val acceptedTransactionIds: Set<String>,
     val backendLastCounter: Int,
-    val conflictReason: String? = null
+    val conflictReason: String? = null,
+    val retryableFailureReason: String? = null
 ) {
     val hasConflict: Boolean get() = conflictReason != null
+    val shouldRetry: Boolean get() = retryableFailureReason != null
 }
 
 data class TelemetryStatus(
