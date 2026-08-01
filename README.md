@@ -13,10 +13,10 @@ README ini adalah pintu masuk developer. Gunakan dokumen di `docs/` untuk detail
 | Settings | Ada. Pilih operator preset dan manual vendor override. Perubahan operator memicu ulang initialization pipeline. | `feature/settings/` |
 | Diagnostic | Ada. ViewModel menguji NFC, SAM, SDK/kernel info, scanner, audio, LED, serial, plus beberapa status statis. | `feature/diagnostic/` |
 | Domain model | Ada. Operator preset, fare policy, terminal config, bank issuer, card info, transaction record, telemetry status. | `core/model/DomainModels.kt` |
-| Database | Ada. Room + SQLCipher untuk tabel `transactions` dan `location_logs`; location log disimpan 7 hari dan schema memakai migration eksplisit 1->2. | `core/database/` |
+| Database | Ada. Room + SQLCipher untuk tabel `transactions`, `location_logs`, `transaction_counter_allocations`, dan `device_counter_state`; location log disimpan 7 hari dan schema memakai migration eksplisit 1->2->3. | `core/database/` |
 | Payment card | Ada. Mutex transaction, time gate, anti-passback 10 detik, bank APDU dispatcher, commit DB, LED/audio feedback. APDU handler masih berbasis adapter/protokol awal dan test lambda, bukan sertifikasi bank produksi. | `core/payment/` |
 | QRIS | Ada. Generate/process payload QRIS, CRC16-CCITT validation, RRN-like transCode, commit DB lewat `PaymentEngine`. | `core/payment/qris/` |
-| Sync | Ada. Transaction sync masih manual/simulasi, tetapi GPS telemetry sudah otomatis: persist location log, publish MQTT, API fallback, drain ulang pending log, dan prune 7 hari. | `core/sync/` |
+| Sync | Ada. Transaction sync memakai API ACK contract: idempotent batch upload, accepted transaction IDs, backend last-counter validation, dan conflict gate. GPS telemetry otomatis: persist location log, publish MQTT, API fallback, drain ulang pending log, dan prune 7 hari. | `core/sync/` |
 | Network | Ada. Ktor client untuk terminal config dan API fallback telemetry, Paho MQTT dengan reconnect loop, QoS 1 location publish, payment response flow, remote command flow. | `core/network/` |
 | Time validation | Ada. Default untrusted sampai ada trusted source; persisted monotonic anchor, GPS NMEA, Android network clock API 33+, SNTP fallback, root correction, QRIS/card gate, dan continuous validation. Reboot offline tanpa source tepercaya tetap diblokir. | `core/security/MultiSourceTimeSyncEngine.kt`, `core/location/` |
 | HAL | Ada kontrak dan factory. E60Q/E60V2 adapter tersedia, generic default driver tersedia, Q6/Z90/A90/Telpo/MSI masih fallback/gap. | `core/hardware-api/`, `core/hardware-drivers/` |
@@ -334,7 +334,7 @@ Feature modules should depend on these interfaces or on app-provided dependencie
 
 ### Database
 
-Current schema is version 2:
+Current schema is version 3:
 
 ```text
 transactions(
@@ -377,9 +377,25 @@ location_logs(
   deliveryAttemptCount INTEGER,
   lastDeliveryError TEXT NULL
 )
+
+transaction_counter_allocations(
+  transactionCounter INTEGER PRIMARY KEY,
+  transactionId TEXT UNIQUE,
+  allocatedAtUtc INTEGER
+)
+
+device_counter_state(
+  counterId TEXT PRIMARY KEY,
+  lastSuccessCounter INTEGER,
+  lastBackendAckCounter INTEGER,
+  syncConflictReason TEXT NULL,
+  updatedAtUtc INTEGER
+)
 ```
 
-`location_logs` are retained for 7 days. Schema 1->2 uses an explicit Room migration; keep future schema changes migration-backed.
+`transactionCounter` is the device success-ledger counter, not the bank/card APDU counter. It is allocated only for successful local card/QRIS commits inside a Room transaction, then synced to the backend with exact accepted transaction IDs and exact backend last-counter acknowledgement. If the backend acknowledgement does not match the local success ledger, `device_counter_state.syncConflictReason` is set and new successful commits are blocked until reconciliation.
+
+`location_logs` are retained for 7 days. Schema 1->2 adds location logs, and schema 2->3 adds counter allocation/state tables with deterministic legacy success-counter backfill. Keep future schema changes migration-backed.
 
 ## Operator Model
 
@@ -435,14 +451,14 @@ Before coding, identify the feature type:
 | New remote command | `core:devicemanager`, maybe `core:network` | Validate action, constrain parameters, avoid arbitrary command execution. |
 | New screen | `feature:<name>` or existing feature module | UI state only in feature; business logic stays in core. |
 | New network endpoint | `core:network`, caller module | Keep endpoint contract typed; no UI-owned network calls. |
-| New sync behavior | `core:sync`, `core:network`, `core:database` | Preserve idempotency with stable transaction IDs and server acknowledgement. |
+| New sync behavior | `core:sync`, `core:network`, `core:database` | Preserve idempotency with stable transaction IDs, monotonic success counters, full accepted-ID ACK, and backend last-counter validation. |
 
 ## Production Hardening Gaps
 
 These are intentionally documented so the next developer does not over-claim readiness:
 
 - SQLCipher passphrase and AES log/backup key are hard-coded. Move to Android Keystore, hardware keystore, injected secure provisioning, or vendor secure element flow.
-- `SyncManager` currently simulates successful upload by marking records synced; implement real endpoint, server ACK, retries, and conflict handling.
+- Backend must implement `/transactions/sync` with the same ACK contract used by `SyncManager`: idempotent `batchId`/`Idempotency-Key`, exact `acceptedTransactionIds`, and exact `backendLastCounter`. Device-side conflict handling is implemented.
 - `InitializationPipelineManager` currently creates terminal config locally from operator presets; integrate real parameter fetch and validation.
 - Time validation still needs target-device verification for vendor RTC/NITZ behavior; app-level SNTP/GPS/monotonic anchor is implemented.
 - Generic hardware drivers return successful no-op behavior; do not use those for field acceptance.

@@ -2,6 +2,8 @@ package com.enterprise.busvalidator.core.network
 
 import com.enterprise.busvalidator.core.model.DeviceIdentity
 import com.enterprise.busvalidator.core.model.LocationTelemetryPayload
+import com.enterprise.busvalidator.core.model.TransactionSyncItem
+import com.enterprise.busvalidator.core.model.TransactionSyncResult
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.enterprise.busvalidator.core.security.NativeSecurityVault
 import io.ktor.client.*
@@ -14,7 +16,13 @@ import io.ktor.http.*
 import io.ktor.serialization.kotlinx.json.*
 import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.buildJsonArray
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonArray
+import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.Json
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,7 +35,7 @@ import javax.inject.Singleton
 class ApiHttpClient @Inject constructor(
     private val securityVault: NativeSecurityVault,
     private val logger: EncryptedLogger
-) : LocationTelemetryApiFallback {
+) : LocationTelemetryApiFallback, TransactionSyncApi {
     private val client = HttpClient(CIO) {
         install(HttpTimeout) {
             requestTimeoutMillis = REQUEST_TIMEOUT_MS
@@ -87,6 +95,49 @@ class ApiHttpClient @Inject constructor(
         }
     }
 
+    override suspend fun uploadTransactions(
+        batchId: String,
+        transactions: List<TransactionSyncItem>
+    ): TransactionSyncResult {
+        require(transactions.isNotEmpty()) { "Transaction sync batch must not be empty" }
+
+        val baseUrl = securityVault.getSecureBaseUrl()
+        val url = "$baseUrl/transactions/sync"
+        val firstCounter = transactions.minOf { it.transactionCounter }
+        val lastCounter = transactions.maxOf { it.transactionCounter }
+
+        return try {
+            val response = client.post(url) {
+                contentType(ContentType.Application.Json)
+                headers {
+                    append("X-Device-Id", DeviceIdentity.DEFAULT_DEVICE_ID)
+                    append("Idempotency-Key", batchId)
+                    append("Accept", "application/json")
+                }
+                setBody(transactions.toSyncJson(batchId, firstCounter, lastCounter))
+            }
+
+            val body = response.bodyAsText()
+            if (response.status.value !in 200..299) {
+                logger.log("ApiClient", "Transaction sync rejected with HTTP ${response.status.value}", isError = true)
+                return TransactionSyncResult(
+                    acceptedTransactionIds = emptySet(),
+                    backendLastCounter = 0,
+                    conflictReason = "HTTP_${response.status.value}"
+                )
+            }
+
+            parseTransactionSyncResponse(body)
+        } catch (e: Exception) {
+            logger.log("ApiClient", "Transaction sync failed: ${e.message}", isError = true)
+            TransactionSyncResult(
+                acceptedTransactionIds = emptySet(),
+                backendLastCounter = 0,
+                conflictReason = e.message ?: "Transaction sync failed"
+            )
+        }
+    }
+
     private fun LocationTelemetryPayload.toJson(): String {
         return buildJsonObject {
             put("locationLogId", locationLogId?.let(::JsonPrimitive) ?: JsonNull)
@@ -109,6 +160,76 @@ class ApiHttpClient @Inject constructor(
             put("deliveryAttempt", JsonPrimitive(deliveryAttempt))
             put("sentAtUtc", JsonPrimitive(System.currentTimeMillis()))
         }.toString()
+    }
+
+    private fun List<TransactionSyncItem>.toSyncJson(
+        batchId: String,
+        firstCounter: Int,
+        lastCounter: Int
+    ): String {
+        return buildJsonObject {
+            put("batchId", JsonPrimitive(batchId))
+            put("deviceId", JsonPrimitive(DeviceIdentity.DEFAULT_DEVICE_ID))
+            put("firstCounter", JsonPrimitive(firstCounter))
+            put("lastCounter", JsonPrimitive(lastCounter))
+            put("transactionCount", JsonPrimitive(size))
+            put(
+                "transactions",
+                buildJsonArray {
+                    this@toSyncJson.forEach { item ->
+                        add(
+                            buildJsonObject {
+                                put("transactionId", JsonPrimitive(item.transactionId))
+                                put("transactionCounter", JsonPrimitive(item.transactionCounter))
+                                put("transCode", JsonPrimitive(item.transCode))
+                                put("cardUid", JsonPrimitive(item.cardUid))
+                                put("bankIssuer", JsonPrimitive(item.bankIssuer))
+                                put("amountDeducted", JsonPrimitive(item.amountDeducted))
+                                put("initialBalance", JsonPrimitive(item.initialBalance))
+                                put("finalBalance", JsonPrimitive(item.finalBalance))
+                                put("timestampUtc", JsonPrimitive(item.timestampUtc))
+                                put("tapMode", JsonPrimitive(item.tapMode))
+                                put("passengerProfile", JsonPrimitive(item.passengerProfile))
+                                put("status", JsonPrimitive(item.status))
+                                put("recordSignature", JsonPrimitive(item.recordSignature))
+                            }
+                        )
+                    }
+                }
+            )
+        }.toString()
+    }
+
+    private fun parseTransactionSyncResponse(body: String): TransactionSyncResult {
+        val root = Json.parseToJsonElement(body).jsonObject
+        val conflictReason = root["conflictReason"]?.jsonPrimitive?.contentOrNull
+        if (conflictReason != null) {
+            return TransactionSyncResult(
+                acceptedTransactionIds = emptySet(),
+                backendLastCounter = root["backendLastCounter"]?.jsonPrimitive?.intOrNull ?: 0,
+                conflictReason = conflictReason
+            )
+        }
+
+        val acceptedIds = root["acceptedTransactionIds"]
+            ?.jsonArray
+            ?.mapNotNull { it.jsonPrimitive.contentOrNull }
+            ?.toSet()
+            ?: emptySet()
+        val backendLastCounter = root["backendLastCounter"]?.jsonPrimitive?.intOrNull
+
+        if (acceptedIds.isEmpty() || backendLastCounter == null) {
+            return TransactionSyncResult(
+                acceptedTransactionIds = emptySet(),
+                backendLastCounter = 0,
+                conflictReason = "Invalid backend ACK shape"
+            )
+        }
+
+        return TransactionSyncResult(
+            acceptedTransactionIds = acceptedIds,
+            backendLastCounter = backendLastCounter
+        )
     }
 
     private companion object {

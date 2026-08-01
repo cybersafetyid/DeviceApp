@@ -383,7 +383,32 @@ enum class TransactionStatus {
     FAILED_WRITE_ROLLBACK,
     UNTRUSTED_TIME_REJECTED,
     CARD_READ_ERROR,
-    AUTO_COMPLETION_FAILED
+    AUTO_COMPLETION_FAILED,
+    COUNTER_SYNC_CONFLICT
+}
+
+data class TransactionSyncItem(
+    val transactionId: String,
+    val transactionCounter: Int,
+    val transCode: String,
+    val cardUid: String,
+    val bankIssuer: String,
+    val amountDeducted: Long,
+    val initialBalance: Long,
+    val finalBalance: Long,
+    val timestampUtc: Long,
+    val tapMode: String,
+    val passengerProfile: String,
+    val status: String,
+    val recordSignature: String
+)
+
+data class TransactionSyncResult(
+    val acceptedTransactionIds: Set<String>,
+    val backendLastCounter: Int,
+    val conflictReason: String? = null
+) {
+    val hasConflict: Boolean get() = conflictReason != null
 }
 
 data class TelemetryStatus(

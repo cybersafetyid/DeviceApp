@@ -4,6 +4,7 @@ import com.enterprise.busvalidator.core.network.ApiHttpClient
 import com.enterprise.busvalidator.core.network.LocationTelemetryApiFallback
 import com.enterprise.busvalidator.core.network.LocationTelemetryMqttPublisher
 import com.enterprise.busvalidator.core.network.MqttTelemetryClient
+import com.enterprise.busvalidator.core.network.TransactionSyncApi
 import dagger.Binds
 import dagger.Module
 import dagger.hilt.InstallIn
@@ -21,4 +22,9 @@ abstract class NetworkBindingsModule {
     abstract fun bindLocationTelemetryApiFallback(
         client: ApiHttpClient
     ): LocationTelemetryApiFallback
+
+    @Binds
+    abstract fun bindTransactionSyncApi(
+        client: ApiHttpClient
+    ): TransactionSyncApi
 }

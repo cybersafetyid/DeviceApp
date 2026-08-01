@@ -59,6 +59,95 @@ object DatabaseModule {
         }
     }
 
+    private val MIGRATION_2_3 = object : Migration(2, 3) {
+        override fun migrate(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `transaction_counter_allocations` (
+                    `transactionCounter` INTEGER NOT NULL,
+                    `transactionId` TEXT NOT NULL,
+                    `allocatedAtUtc` INTEGER NOT NULL,
+                    PRIMARY KEY(`transactionCounter`)
+                )
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS `index_transaction_counter_allocations_transactionId`
+                ON `transaction_counter_allocations` (`transactionId`)
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                CREATE TABLE IF NOT EXISTS `device_counter_state` (
+                    `counterId` TEXT NOT NULL,
+                    `lastSuccessCounter` INTEGER NOT NULL,
+                    `lastBackendAckCounter` INTEGER NOT NULL,
+                    `syncConflictReason` TEXT,
+                    `updatedAtUtc` INTEGER NOT NULL,
+                    PRIMARY KEY(`counterId`)
+                )
+                """.trimIndent()
+            )
+            backfillLegacyCounters(db)
+        }
+
+        private fun backfillLegacyCounters(db: SupportSQLiteDatabase) {
+            db.execSQL(
+                """
+                INSERT OR IGNORE INTO `transaction_counter_allocations` (
+                    `transactionCounter`,
+                    `transactionId`,
+                    `allocatedAtUtc`
+                )
+                SELECT
+                    (
+                        SELECT COUNT(*)
+                        FROM `transactions` t2
+                        WHERE t2.status = 'SUCCESS'
+                          AND (
+                              t2.timestampUtc < t1.timestampUtc
+                              OR (t2.timestampUtc = t1.timestampUtc AND t2.transactionId <= t1.transactionId)
+                          )
+                    ) AS migratedCounter,
+                    t1.transactionId,
+                    t1.timestampUtc
+                FROM `transactions` t1
+                WHERE t1.status = 'SUCCESS'
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                UPDATE `transactions`
+                SET `transactionCounter` = (
+                    SELECT `transactionCounter`
+                    FROM `transaction_counter_allocations`
+                    WHERE `transaction_counter_allocations`.`transactionId` = `transactions`.`transactionId`
+                )
+                WHERE `status` = 'SUCCESS'
+                """.trimIndent()
+            )
+            db.execSQL(
+                """
+                INSERT OR REPLACE INTO `device_counter_state` (
+                    `counterId`,
+                    `lastSuccessCounter`,
+                    `lastBackendAckCounter`,
+                    `syncConflictReason`,
+                    `updatedAtUtc`
+                )
+                VALUES (
+                    'device-success-counter',
+                    (SELECT COALESCE(MAX(`transactionCounter`), 0) FROM `transaction_counter_allocations`),
+                    0,
+                    NULL,
+                    strftime('%s','now') * 1000
+                )
+                """.trimIndent()
+            )
+        }
+    }
+
     @Provides
     @Singleton
     fun provideValidatorDatabase(@ApplicationContext context: Context): ValidatorDatabase {
@@ -72,7 +161,7 @@ object DatabaseModule {
             "bus_validator_encrypted.db"
         )
         .openHelperFactory(factory)
-        .addMigrations(MIGRATION_1_2)
+        .addMigrations(MIGRATION_1_2, MIGRATION_2_3)
         .build()
     }
 
@@ -87,4 +176,8 @@ object DatabaseModule {
     fun provideLocationLogDao(db: ValidatorDatabase): LocationLogDao {
         return db.locationLogDao()
     }
+
+    @Provides
+    @Singleton
+    fun provideTransactionCounterDao(db: ValidatorDatabase) = db.transactionCounterDao()
 }

@@ -1,8 +1,8 @@
 package com.enterprise.busvalidator.core.payment
 
 import android.content.Context
-import com.enterprise.busvalidator.core.database.TransactionDao
 import com.enterprise.busvalidator.core.database.TransactionEntity
+import com.enterprise.busvalidator.core.database.TransactionLedgerWriter
 import com.enterprise.busvalidator.core.hardware.api.AudioDriver
 import com.enterprise.busvalidator.core.hardware.api.LedDriver
 import com.enterprise.busvalidator.core.hardware.api.SoundType
@@ -13,8 +13,6 @@ import com.enterprise.busvalidator.core.payment.qris.QrisPaymentEngine
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.enterprise.busvalidator.core.security.MultiSourceTimeSyncEngine
 import com.enterprise.busvalidator.core.security.SuManager
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.flowOf
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.*
 import org.junit.Before
@@ -40,16 +38,38 @@ class BankApduAndQrisTest {
     private val fakeInsertedTransactions = mutableListOf<TransactionEntity>()
     private var lastSoundPlayed: SoundType? = null
     private var isLedSuccessSet = false
+    private var nextLedgerCounter = 1
+    private var counterConflict = false
 
-    private val fakeTransactionDao = object : TransactionDao {
-        override suspend fun insertTransaction(transaction: TransactionEntity) {
-            fakeInsertedTransactions.add(transaction)
+    private val fakeTransactionLedgerWriter = object : TransactionLedgerWriter {
+        override suspend fun hasCounterSyncConflict(): Boolean = counterConflict
+
+        override suspend fun commitSuccessfulTransaction(
+            unsignedRecord: TransactionRecord,
+            sign: (TransactionRecord) -> String
+        ): TransactionRecord {
+            val recordWithCounter = unsignedRecord.copy(transactionCounter = nextLedgerCounter++)
+            val signedRecord = recordWithCounter.copy(recordSignature = sign(recordWithCounter))
+            fakeInsertedTransactions.add(
+                TransactionEntity(
+                    transactionId = signedRecord.transactionId,
+                    transCode = signedRecord.transCode,
+                    transactionCounter = signedRecord.transactionCounter,
+                    cardUid = signedRecord.cardUid,
+                    bankIssuer = signedRecord.bankIssuer,
+                    amountDeducted = signedRecord.amountDeducted,
+                    initialBalance = signedRecord.initialBalance,
+                    finalBalance = signedRecord.finalBalance,
+                    timestampUtc = signedRecord.timestampUtc,
+                    tapMode = signedRecord.tapMode.name,
+                    passengerProfile = signedRecord.passengerProfile.name,
+                    status = signedRecord.status.name,
+                    isSynced = false,
+                    recordSignature = signedRecord.recordSignature
+                )
+            )
+            return signedRecord
         }
-        override suspend fun getUnsyncedTransactions(): List<TransactionEntity> = fakeInsertedTransactions
-        override suspend fun markSynced(ids: List<String>) {}
-        override fun getPendingSyncCountFlow(): Flow<Int> = flowOf(fakeInsertedTransactions.size)
-        override fun getDailyTransactionCountFlow(startOfDayTimestamp: Long): Flow<Int> = flowOf(fakeInsertedTransactions.size)
-        override suspend fun getLastTransaction(): TransactionEntity? = fakeInsertedTransactions.lastOrNull()
     }
 
     private val fakeLedDriver = object : LedDriver {
@@ -89,11 +109,13 @@ class BankApduAndQrisTest {
         timeSyncEngine.validateAndUpdateTime(System.currentTimeMillis(), source = "TEST_TRUSTED_TIME")
 
         fakeInsertedTransactions.clear()
+        nextLedgerCounter = 1
+        counterConflict = false
         lastSoundPlayed = null
         isLedSuccessSet = false
 
         paymentEngine = PaymentEngine(
-            fakeTransactionDao,
+            fakeTransactionLedgerWriter,
             timeSyncEngine,
             logger,
             fakeLedDriver,
@@ -197,7 +219,9 @@ class BankApduAndQrisTest {
         assertEquals(TransactionStatus.SUCCESS, record.status)
         assertTrue(record.transCode.isNotEmpty())
         assertTrue(record.transCode.startsWith("TC-"))
+        assertEquals(1, record.transactionCounter)
         assertEquals(1, fakeInsertedTransactions.size)
+        assertEquals(record.transactionCounter, fakeInsertedTransactions.single().transactionCounter)
         assertTrue(isLedSuccessSet)
         assertEquals(SoundType.SUCCESS_BEEP, lastSoundPlayed)
     }
@@ -214,9 +238,43 @@ class BankApduAndQrisTest {
         assertEquals(TransactionStatus.SUCCESS, record.status)
         assertEquals("QRIS_TAP", record.bankIssuer)
         assertTrue(record.transCode.startsWith("RRN-QRIS-"))
+        assertEquals(1, record.transactionCounter)
         assertEquals(1, fakeInsertedTransactions.size)
+        assertEquals(record.transactionCounter, fakeInsertedTransactions.single().transactionCounter)
         assertTrue(isLedSuccessSet)
         assertEquals(SoundType.SUCCESS_BEEP, lastSoundPlayed)
+    }
+
+    @Test
+    fun testSuccessfulTransactionsAllocateSequentialLedgerCountersOnly() = runBlocking {
+        val mockCardApdu: (ByteArray) -> ByteArray = { byteArrayOf(0x90.toByte(), 0x00.toByte()) }
+
+        val first = paymentEngine.processCardApduFlow(
+            cardUid = "04E21A88BC6180",
+            transmitCardApdu = mockCardApdu
+        )
+        val second = paymentEngine.processQrisTapFlow(
+            qrPayload = qrisPaymentEngine.generateDynamicQrisPayload(amount = 4000L)
+        )
+
+        assertEquals(TransactionStatus.SUCCESS, first.status)
+        assertEquals(TransactionStatus.SUCCESS, second.status)
+        assertEquals(1, first.transactionCounter)
+        assertEquals(2, second.transactionCounter)
+        assertEquals(listOf(1, 2), fakeInsertedTransactions.map { it.transactionCounter })
+    }
+
+    @Test
+    fun testCounterConflictBlocksTransactionWithoutIncrementingCounter() = runBlocking {
+        counterConflict = true
+
+        val record = paymentEngine.processQrisTapFlow(
+            qrPayload = qrisPaymentEngine.generateDynamicQrisPayload(amount = 4000L)
+        )
+
+        assertEquals(TransactionStatus.COUNTER_SYNC_CONFLICT, record.status)
+        assertEquals(0, fakeInsertedTransactions.size)
+        assertEquals(1, nextLedgerCounter)
     }
 
     @Test

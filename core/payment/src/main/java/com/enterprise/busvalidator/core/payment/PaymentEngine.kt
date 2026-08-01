@@ -1,7 +1,6 @@
 package com.enterprise.busvalidator.core.payment
 
-import com.enterprise.busvalidator.core.database.TransactionDao
-import com.enterprise.busvalidator.core.database.TransactionEntity
+import com.enterprise.busvalidator.core.database.TransactionLedgerWriter
 import com.enterprise.busvalidator.core.hardware.api.AudioDriver
 import com.enterprise.busvalidator.core.hardware.api.LedDriver
 import com.enterprise.busvalidator.core.hardware.api.SamDriver
@@ -23,7 +22,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class PaymentEngine @Inject constructor(
-    private val transactionDao: TransactionDao,
+    private val transactionLedgerWriter: TransactionLedgerWriter,
     private val timeSyncEngine: MultiSourceTimeSyncEngine,
     private val logger: EncryptedLogger,
     private val ledDriver: LedDriver,
@@ -58,6 +57,13 @@ class PaymentEngine @Inject constructor(
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.FAILED_BEEP)
             return@withLock buildRecord(cardUid, "UNKNOWN", "", 0, 0, 0, 0, nowMs, tapMode, passengerProfile, TransactionStatus.UNTRUSTED_TIME_REJECTED)
+        }
+
+        if (transactionLedgerWriter.hasCounterSyncConflict()) {
+            logger.log("PaymentEngine", "TRANSACTION REJECTED: Counter sync conflict with backend", isError = true)
+            ledDriver.setLedFailed()
+            audioDriver.playSound(SoundType.FAILED_BEEP)
+            return@withLock buildRecord(cardUid, "UNKNOWN", "", 0, 0, 0, 0, nowMs, tapMode, passengerProfile, TransactionStatus.COUNTER_SYNC_CONFLICT)
         }
 
         // Guard 2: Anti-Passback / Double Deduct Safeguard
@@ -103,11 +109,11 @@ class PaymentEngine @Inject constructor(
         antiPassbackCache[cardUid] = nowMs
         timeSyncEngine.updatePersistedCheckpoint(nowMs)
 
-        val record = buildRecord(
+        val unsignedRecord = buildRecord(
             cardUid = cardUid,
             bankIssuer = cardInfo.bankIssuer.name,
             transCode = deductResult.transCode,
-            txCounter = deductResult.transactionCounter,
+            txCounter = 0,
             deducted = deductResult.amountDeducted,
             initialBal = deductResult.initialBalance,
             finalBal = deductResult.finalBalance,
@@ -117,7 +123,7 @@ class PaymentEngine @Inject constructor(
             status = TransactionStatus.SUCCESS
         )
 
-        commitTransactionToDb(record)
+        val record = commitSuccessfulTransaction(unsignedRecord)
         ledDriver.setLedSuccess()
         audioDriver.playSound(SoundType.SUCCESS_BEEP)
         logger.log("PaymentEngine", "CARD APDU TRANSACTION COMMITTED: TxId=${record.transactionId}, TransCode=${record.transCode}, Deducted=${record.amountDeducted}, FinalBal=${record.finalBalance}")
@@ -156,15 +162,34 @@ class PaymentEngine @Inject constructor(
             )
         }
 
+        if (transactionLedgerWriter.hasCounterSyncConflict()) {
+            logger.log("PaymentEngine", "QRIS TRANSACTION REJECTED: Counter sync conflict with backend", isError = true)
+            ledDriver.setLedFailed()
+            audioDriver.playSound(SoundType.FAILED_BEEP)
+            return@withLock buildRecord(
+                cardUid = "QRIS-UNKNOWN",
+                bankIssuer = BankIssuer.QRIS_TAP.name,
+                transCode = "",
+                txCounter = 0,
+                deducted = 0,
+                initialBal = 0,
+                finalBal = 0,
+                timestamp = nowMs,
+                tapMode = tapMode,
+                profile = passengerProfile,
+                status = TransactionStatus.COUNTER_SYNC_CONFLICT
+            )
+        }
+
         val fare = calculateDynamicFare("QRIS", passengerProfile, fareRulePolicy)
 
         val qrisData = qrisPaymentEngine.processQrisTapPayload(qrPayload, fareAmount = fare)
 
-        val record = buildRecord(
+        val unsignedRecord = buildRecord(
             cardUid = "QRIS-${qrisData.terminalId}",
             bankIssuer = BankIssuer.QRIS_TAP.name,
             transCode = qrisData.transCode,
-            txCounter = (1..999).random(),
+            txCounter = 0,
             deducted = qrisData.amount,
             initialBal = 0L,
             finalBal = 0L,
@@ -174,7 +199,7 @@ class PaymentEngine @Inject constructor(
             status = TransactionStatus.SUCCESS
         )
 
-        commitTransactionToDb(record)
+        val record = commitSuccessfulTransaction(unsignedRecord)
         ledDriver.setLedSuccess()
         audioDriver.playSound(SoundType.SUCCESS_BEEP)
         logger.log("PaymentEngine", "QRIS TAP TRANSACTION COMMITTED: RRN TransCode=${record.transCode}, Amount=${record.amountDeducted}")
@@ -182,25 +207,10 @@ class PaymentEngine @Inject constructor(
         return@withLock record
     }
 
-    private suspend fun commitTransactionToDb(record: TransactionRecord) {
-        transactionDao.insertTransaction(
-            TransactionEntity(
-                transactionId = record.transactionId,
-                transCode = record.transCode,
-                transactionCounter = record.transactionCounter,
-                cardUid = record.cardUid,
-                bankIssuer = record.bankIssuer,
-                amountDeducted = record.amountDeducted,
-                initialBalance = record.initialBalance,
-                finalBalance = record.finalBalance,
-                timestampUtc = record.timestampUtc,
-                tapMode = record.tapMode.name,
-                passengerProfile = record.passengerProfile.name,
-                status = record.status.name,
-                isSynced = false,
-                recordSignature = record.recordSignature
-            )
-        )
+    private suspend fun commitSuccessfulTransaction(unsignedRecord: TransactionRecord): TransactionRecord {
+        return transactionLedgerWriter.commitSuccessfulTransaction(unsignedRecord) { record ->
+            generateRecordSignature(record)
+        }
     }
 
     private fun calculateDynamicFare(bankIssuer: String, profile: PassengerProfile, policy: FareRulePolicy?): Long {
@@ -228,7 +238,7 @@ class PaymentEngine @Inject constructor(
         status: TransactionStatus
     ): TransactionRecord {
         val txId = "TX-${timestamp}-${cardUid.takeLast(4)}"
-        val sig = generateHmacSignature("$txId:$cardUid:$transCode:$deducted:$finalBal:$timestamp")
+        val sig = generateHmacSignature("$txId:$cardUid:$transCode:$txCounter:$deducted:$finalBal:$timestamp")
         return TransactionRecord(
             transactionId = txId,
             transCode = transCode,
@@ -249,5 +259,12 @@ class PaymentEngine @Inject constructor(
     private fun generateHmacSignature(rawString: String): String {
         val bytes = MessageDigest.getInstance("SHA-256").digest(rawString.toByteArray())
         return bytes.joinToString("") { "%02x".format(it) }
+    }
+
+    private fun generateRecordSignature(record: TransactionRecord): String {
+        return generateHmacSignature(
+            "${record.transactionId}:${record.cardUid}:${record.transCode}:${record.transactionCounter}:" +
+                "${record.amountDeducted}:${record.finalBalance}:${record.timestampUtc}"
+        )
     }
 }

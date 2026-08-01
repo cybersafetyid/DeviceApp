@@ -22,6 +22,29 @@ data class TransactionEntity(
 )
 
 @Entity(
+    tableName = "transaction_counter_allocations",
+    indices = [Index(value = ["transactionId"], unique = true)]
+)
+data class TransactionCounterAllocationEntity(
+    @PrimaryKey val transactionCounter: Int,
+    val transactionId: String,
+    val allocatedAtUtc: Long
+)
+
+@Entity(tableName = "device_counter_state")
+data class DeviceCounterStateEntity(
+    @PrimaryKey val counterId: String = DEFAULT_COUNTER_ID,
+    val lastSuccessCounter: Int,
+    val lastBackendAckCounter: Int,
+    val syncConflictReason: String?,
+    val updatedAtUtc: Long
+) {
+    companion object {
+        const val DEFAULT_COUNTER_ID = "device-success-counter"
+    }
+}
+
+@Entity(
     tableName = "location_logs",
     indices = [
         Index(value = ["recordedAtUtc"]),
@@ -54,10 +77,10 @@ data class LocationLogEntity(
 
 @Dao
 interface TransactionDao {
-    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    @Insert(onConflict = OnConflictStrategy.ABORT)
     suspend fun insertTransaction(transaction: TransactionEntity)
 
-    @Query("SELECT * FROM transactions WHERE isSynced = 0 ORDER BY timestampUtc ASC")
+    @Query("SELECT * FROM transactions WHERE isSynced = 0 AND status = 'SUCCESS' ORDER BY transactionCounter ASC")
     suspend fun getUnsyncedTransactions(): List<TransactionEntity>
 
     @Query("UPDATE transactions SET isSynced = 1 WHERE transactionId IN (:ids)")
@@ -71,6 +94,50 @@ interface TransactionDao {
 
     @Query("SELECT * FROM transactions ORDER BY timestampUtc DESC LIMIT 1")
     suspend fun getLastTransaction(): TransactionEntity?
+
+    @Query("SELECT COALESCE(MAX(transactionCounter), 0) FROM transactions WHERE status = 'SUCCESS'")
+    suspend fun getMaxSuccessfulTransactionCounter(): Int
+}
+
+@Dao
+interface TransactionCounterDao {
+    @Insert(onConflict = OnConflictStrategy.ABORT)
+    suspend fun insertAllocation(allocation: TransactionCounterAllocationEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertCounterState(state: DeviceCounterStateEntity)
+
+    @Query("SELECT * FROM device_counter_state WHERE counterId = :counterId LIMIT 1")
+    suspend fun getCounterState(counterId: String = DeviceCounterStateEntity.DEFAULT_COUNTER_ID): DeviceCounterStateEntity?
+
+    @Query(
+        """
+        UPDATE device_counter_state
+        SET lastBackendAckCounter = :backendLastCounter,
+            syncConflictReason = NULL,
+            updatedAtUtc = :updatedAtUtc
+        WHERE counterId = :counterId
+        """
+    )
+    suspend fun markBackendCounterAcknowledged(
+        backendLastCounter: Int,
+        updatedAtUtc: Long,
+        counterId: String = DeviceCounterStateEntity.DEFAULT_COUNTER_ID
+    )
+
+    @Query(
+        """
+        UPDATE device_counter_state
+        SET syncConflictReason = :reason,
+            updatedAtUtc = :updatedAtUtc
+        WHERE counterId = :counterId
+        """
+    )
+    suspend fun markCounterConflict(
+        reason: String,
+        updatedAtUtc: Long,
+        counterId: String = DeviceCounterStateEntity.DEFAULT_COUNTER_ID
+    )
 }
 
 @Dao
@@ -119,8 +186,18 @@ interface LocationLogDao {
     suspend fun pruneLocationLogsOlderThan(cutoffUtc: Long): Int
 }
 
-@Database(entities = [TransactionEntity::class, LocationLogEntity::class], version = 2, exportSchema = false)
+@Database(
+    entities = [
+        TransactionEntity::class,
+        LocationLogEntity::class,
+        TransactionCounterAllocationEntity::class,
+        DeviceCounterStateEntity::class
+    ],
+    version = 3,
+    exportSchema = false
+)
 abstract class ValidatorDatabase : RoomDatabase() {
     abstract fun transactionDao(): TransactionDao
     abstract fun locationLogDao(): LocationLogDao
+    abstract fun transactionCounterDao(): TransactionCounterDao
 }

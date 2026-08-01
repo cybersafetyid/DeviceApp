@@ -85,21 +85,37 @@ Replace it before production.
 
 ## Sync
 
-`SyncManager` currently implements a manual offline-first shape:
+`SyncManager` implements ACK-driven offline-first transaction sync:
 
-1. Read `TransactionDao.getUnsyncedTransactions()`.
-2. Log count.
-3. Simulate upload success.
-4. Mark all IDs as synced.
+1. Read successful unsynced rows from `TransactionDao.getUnsyncedTransactions()`.
+2. Build a deterministic batch ID from device ID, first/last counter, and transaction IDs.
+3. POST `/transactions/sync` with `Idempotency-Key`.
+4. Require the backend to return exact `acceptedTransactionIds` and `backendLastCounter`.
+5. Mark rows synced only when every local transaction ID is accepted and `backendLastCounter == localLastSuccessCounter`.
+6. Store `device_counter_state.syncConflictReason` and block future successful commits when the backend response is partial, conflicting, or counter-mismatched.
 
-It does not yet:
+Expected success response shape:
 
-- POST to a real endpoint.
-- Validate server acknowledgement.
-- Retry with backoff.
-- Use WorkManager scheduling.
-- Persist sync attempt metadata.
-- Handle partial success or conflict response.
+```json
+{
+  "acceptedTransactionIds": ["tx-1", "tx-2"],
+  "backendLastCounter": 42
+}
+```
+
+Expected conflict response shape:
+
+```json
+{
+  "acceptedTransactionIds": ["tx-1"],
+  "backendLastCounter": 41,
+  "conflictReason": "backend counter mismatch"
+}
+```
+
+The backend must treat `transactionId` and `Idempotency-Key` as idempotency keys, and `transactionCounter` as the monotonic per-device success-ledger counter. Duplicate retry of the same batch must return the same accepted IDs and same backend last counter.
+
+It does not yet persist detailed sync attempt history or schedule retries through WorkManager.
 
 `androidx.work:work-runtime-ktx` is present in the Gradle dependencies, so WorkManager can be added without changing the version catalog.
 

@@ -101,6 +101,15 @@ Successful card/QRIS records are inserted into `transactions` with:
 
 `recordSignature` currently uses SHA-256 digest text, not a real HMAC with secret key.
 
+`transactionCounter` is the device success-ledger counter. It is not the APDU/card counter returned by a bank handler.
+
+- It is allocated only after card or QRIS validation succeeds.
+- Allocation and transaction insertion happen atomically in `RoomTransactionLedgerWriter.commitSuccessfulTransaction()`.
+- `transaction_counter_allocations` enforces one counter per `transactionId` and one transaction per counter.
+- The counter starts at 1 and increments by one for each successful local transaction.
+- Failed, rejected, anti-passback, untrusted-time, and counter-conflict results do not allocate a counter.
+- If `device_counter_state.syncConflictReason` is set, card and QRIS flows reject with `COUNTER_SYNC_CONFLICT` before touching the ledger.
+
 ## Tests
 
 Current tests live in `core/payment/src/test/.../BankApduAndQrisTest.kt` and cover:
@@ -112,6 +121,8 @@ Current tests live in `core/payment/src/test/.../BankApduAndQrisTest.kt` and cov
 - End-to-end card payment with mock APDU lambda.
 - End-to-end QRIS payment.
 - KMT FeliCa read/deduct.
+- Sequential ledger-counter allocation across successful card and QRIS transactions.
+- Counter sync conflict gate that blocks new successful commits without incrementing the counter.
 
 Run:
 
