@@ -83,10 +83,11 @@ dependencies {
     implementation(libs.androidx.ui.tooling.preview)
     implementation(libs.androidx.material3)
 
-    // Room Database
+    // Room Database & SQLCipher Encryption
     implementation(libs.androidx.room.runtime)
     implementation(libs.androidx.room.ktx)
     ksp(libs.androidx.room.compiler)
+    implementation(libs.sqlcipher.android)
 
     // Dependency Injection
     implementation(libs.hilt.android)

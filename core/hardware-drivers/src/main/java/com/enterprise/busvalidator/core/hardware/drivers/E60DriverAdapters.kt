@@ -1,9 +1,9 @@
 package com.enterprise.busvalidator.core.hardware.drivers
 
+import android.content.Context
 import com.enterprise.busvalidator.core.hardware.api.*
 import com.enterprise.busvalidator.core.security.EncryptedLogger
-import kotlinx.coroutines.flow.Flow
-import kotlinx.coroutines.flow.emptyFlow
+import dagger.hilt.android.qualifiers.ApplicationContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -22,7 +22,6 @@ class E60QDriverAdapter @Inject constructor(
         logger.log("E60Q_HAL", "Initializing E60Q Lenz Contactless RF Card Reader (RfCardDriver)...")
         isNfcActive = true
         try {
-            // Invokes Lenz RfCardDriver via reflection/direct SDK binding
             val rfDriverClass = Class.forName("com.lenz.e60qsdk.RfCardDriver")
             logger.log("E60Q_HAL", "E60Q RfCardDriver loaded successfully: ${rfDriverClass.name}")
         } catch (e: Throwable) {
@@ -87,12 +86,18 @@ class E60QDriverAdapter @Inject constructor(
 
 /**
  * Driver Adapter for E60V2 Hardware (LENZ E60V2 Device).
- * Binds to E60V2SDK-release.aar (com.lenz.e60qsdk.* & com.lenz.utils.*).
+ * Binds to E60V2SDK-release.aar for NFC/SAM/LED/Audio, and integrates E60V2CameraScannerEngine
+ * for High-Speed Camera QR Scanning (Low Light, Convex Lens Correction, Max Length 1024).
  */
 @Singleton
 class E60V2DriverAdapter @Inject constructor(
+    @ApplicationContext private val context: Context,
     private val logger: EncryptedLogger
-) : NfcDriver, SamDriver, LedDriver, AudioDriver {
+) : NfcDriver, SamDriver, LedDriver, AudioDriver, ScannerDriver {
+
+    private val cameraScannerEngine by lazy {
+        E60V2CameraScannerEngine(context, logger)
+    }
 
     override fun startCardListening(onCardDetected: (cardUid: String, apduHandler: (ByteArray) -> ByteArray) -> Unit) {
         logger.log("E60V2_HAL", "Initializing E60V2 RfCardDriver & UsbControl...")
@@ -117,4 +122,15 @@ class E60V2DriverAdapter @Inject constructor(
     override fun turnOffLeds() { logger.log("E60V2_HAL", "E60V2 LED -> OFF") }
 
     override fun playSound(soundType: SoundType) { logger.log("E60V2_HAL", "E60V2 Beeper -> $soundType") }
+
+    // Camera QR Scanner Engine Implementation for E60V2
+    override fun startQrScan(onQrScanned: (qrContent: String) -> Unit) {
+        logger.log("E60V2_HAL", "Starting High-Speed E60V2 Camera QR Scanner Engine...")
+        cameraScannerEngine.startScanning(onQrScanned)
+    }
+
+    override fun stopQrScan() {
+        logger.log("E60V2_HAL", "Stopping E60V2 Camera QR Scanner Engine...")
+        cameraScannerEngine.stopScanning()
+    }
 }

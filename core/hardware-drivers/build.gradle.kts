@@ -28,10 +28,18 @@ dependencies {
     implementation(project(":core:security"))
     implementation(project(":core:hardware-api"))
 
-    // Vendor SDK compileOnly dependencies to avoid DEX class collision between E60Q and E60V2
+    // Vendor SDK compileOnly dependencies
     compileOnly(files("../../libs/vendor-sdk/e60/E60Q/E60QSDK-release.aar"))
     compileOnly(files("../../libs/vendor-sdk/e60/E60Q/jtbqrcodesdk-release.aar"))
     compileOnly(files("../../libs/vendor-sdk/e60/E60V2/E60V2SDK-release.aar"))
+
+    // CameraX + ML Kit + ZXing for E60V2 Poor Quality / Low Light / Convex Lens Camera Scanning
+    implementation(libs.camerax.core)
+    implementation(libs.camerax.camera2)
+    implementation(libs.camerax.lifecycle)
+    implementation(libs.camerax.view)
+    implementation(libs.mlkit.barcode.scanning)
+    implementation(libs.zxing.core)
 
     implementation(libs.androidx.core.ktx)
     implementation(libs.hilt.android)

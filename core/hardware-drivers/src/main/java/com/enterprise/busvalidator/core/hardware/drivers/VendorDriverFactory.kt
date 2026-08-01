@@ -76,6 +76,7 @@ class VendorDriverFactory @Inject constructor(
     fun createScannerDriver(): ScannerDriver {
         return when (getActiveDeviceModel()) {
             VendorDeviceModel.E60Q -> e60qAdapter
+            VendorDeviceModel.E60V2 -> e60v2Adapter
             else -> DefaultScannerDriver(logger)
         }
     }
