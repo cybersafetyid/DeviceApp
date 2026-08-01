@@ -80,6 +80,19 @@ For more details on the implementation plan, please see [P0-Foundation Plan](pla
 
 ---
 
+## 🛠️ Technology Stack
+
+The project leverages modern Android development tools and libraries:
+
+* **Core:** Kotlin 1.9+, Coroutines, Flow
+* **UI:** Jetpack Compose (Material 3), ViewModel, MVI Architecture
+* **Dependency Injection:** Dagger Hilt
+* **Data & Storage:** Room (with SQLCipher for encryption), DataStore
+* **Network & API:** Ktor Client, Kotlinx Serialization
+* **Processing:** KSP (Kotlin Symbol Processing) for optimal build times
+
+---
+
 ## 🚀 Getting Started
 
 ### Prerequisites
