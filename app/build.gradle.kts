@@ -10,14 +10,29 @@ android {
     namespace = "com.enterprise.busvalidator"
     compileSdk = 35
 
+    val gitCommitCount = runCatching {
+        val process = ProcessBuilder("git", "rev-list", "--count", "HEAD").start()
+        process.inputStream.bufferedReader().readText().trim().toInt()
+    }.getOrDefault(142)
+
+    val gitCommitHash = runCatching {
+        val process = ProcessBuilder("git", "rev-parse", "--short", "HEAD").start()
+        process.inputStream.bufferedReader().readText().trim()
+    }.getOrDefault("a1b2c3d")
+
+    val dynamicVersionName = "2.5.0-$gitCommitCount.$gitCommitHash"
+
     defaultConfig {
         applicationId = "com.enterprise.busvalidator"
         minSdk = 21
         targetSdk = 35
-        versionCode = 1
-        versionName = "2.4.1"
+        versionCode = gitCommitCount
+        versionName = dynamicVersionName
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "GIT_HASH", "\"$gitCommitHash\"")
+        buildConfigField("Long", "BUILD_TIME", "${System.currentTimeMillis()}L")
     }
 
     buildTypes {
@@ -39,6 +54,7 @@ android {
     }
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 }
 

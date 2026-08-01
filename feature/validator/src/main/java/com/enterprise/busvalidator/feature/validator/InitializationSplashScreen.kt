@@ -4,13 +4,15 @@ import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
-import androidx.compose.runtime.Composable
+import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.platform.LocalContext
+import com.enterprise.busvalidator.core.common.AppVersionProvider
 import com.enterprise.busvalidator.core.devicemanager.InitStep
 
 @Composable
@@ -18,6 +20,9 @@ fun InteractiveInitializationSplashScreen(
     initStep: InitStep,
     onRetryClick: () -> Unit
 ) {
+    val context = LocalContext.current
+    val appVersion = remember { AppVersionProvider.getAppVersion(context) }
+
     Box(
         modifier = Modifier
             .fillMaxSize()
@@ -36,7 +41,7 @@ fun InteractiveInitializationSplashScreen(
                 fontWeight = FontWeight.Bold
             )
             Text(
-                text = "Enterprise Multi-Operator Platform v2.4.1",
+                text = "Enterprise Multi-Operator Platform ${appVersion.formattedVersion}",
                 color = Color.Gray,
                 fontSize = 14.sp
             )

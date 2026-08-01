@@ -40,6 +40,7 @@ class PaymentEngine @Inject constructor(
         initialBalance: Long,
         passengerProfile: PassengerProfile = PassengerProfile.GENERAL,
         tapMode: TapMode = TapMode.TAP_IN_OUT,
+        fareRulePolicy: FareRulePolicy? = null,
         writeApduExecutor: (amountToDeduct: Long) -> Boolean
     ): TransactionRecord = paymentMutex.withLock {
 
@@ -62,8 +63,8 @@ class PaymentEngine @Inject constructor(
             return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.CARD_ALREADY_TAPPED)
         }
 
-        // Calculate Fare & Dynamic Promos
-        val calculatedFare = calculateDynamicFare(bankIssuer, passengerProfile, initialBalance)
+        // Calculate Fare & Dynamic Promos based on Operator FareRulePolicy
+        val calculatedFare = calculateDynamicFare(bankIssuer, passengerProfile, fareRulePolicy)
 
         // Guard 3: Double Fare Validation Safeguard (Layer 1: Balance Check, Layer 2: Bounds Check)
         if (initialBalance < calculatedFare) {
@@ -121,19 +122,19 @@ class PaymentEngine @Inject constructor(
         return@withLock record
     }
 
-    private fun calculateDynamicFare(bankIssuer: String, profile: PassengerProfile, initialBalance: Long): Long {
-        var fare = 3500L // Base fare
+    private fun calculateDynamicFare(bankIssuer: String, profile: PassengerProfile, policy: FareRulePolicy?): Long {
+        val baseFare = policy?.baseFare ?: 3500L
 
-        // Passenger Profile Promo Discount
-        fare = when (profile) {
-            PassengerProfile.SENIOR_CITIZEN, PassengerProfile.DISABLED -> 0L // Free/Subsidized
-            PassengerProfile.STUDENT -> 2000L // Discounted
-            PassengerProfile.GOVERNMENT_PNS -> 3000L
-            PassengerProfile.GENERAL -> fare
+        var fare = when (profile) {
+            PassengerProfile.SENIOR_CITIZEN -> policy?.seniorCitizenFare ?: 0L
+            PassengerProfile.DISABLED -> policy?.disabledFare ?: 0L
+            PassengerProfile.STUDENT -> policy?.studentFare ?: 2000L
+            PassengerProfile.GOVERNMENT_PNS -> policy?.pnsFare ?: 3000L
+            PassengerProfile.GENERAL -> baseFare
         }
 
-        // Bank Issuer Specific Promo (e.g., Flazz or Bank DKI Monday Special)
-        if (bankIssuer.contains("DKI") && profile == PassengerProfile.GENERAL) {
+        // Bank Issuer Specific Promo
+        if (bankIssuer.contains("DKI") && profile == PassengerProfile.GENERAL && policy == null) {
             fare = 3000L
         }
 

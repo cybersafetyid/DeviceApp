@@ -32,7 +32,12 @@ class NativeSecurityVault @Inject constructor(
      * Retrieves the decrypted production BASEURL in-memory.
      * Guaranteed zero cleartext strings in compiled DEX.
      */
-    fun getSecureBaseUrl(): String {
+    fun getSecureBaseUrl(customOperatorBaseUrl: String? = null): String {
+        if (customOperatorBaseUrl != null && customOperatorBaseUrl.isNotBlank()) {
+            logger.log("SecurityVault", "Using operator specific secure BASEURL: $customOperatorBaseUrl")
+            return customOperatorBaseUrl
+        }
+
         return try {
             val decryptedBytes = ByteArray(obfuscatedBaseUrlBytes.size)
             for (i in obfuscatedBaseUrlBytes.indices) {
@@ -44,6 +49,8 @@ class NativeSecurityVault @Inject constructor(
             "https://api.busvalidator.enterprise.com/v1"
         }
     }
+
+    private fun String?.isNullOrBlank(): Boolean = this == null || this.trim().isEmpty()
 
     /**
      * Encrypts outgoing request payloads with AES-GCM before transport.

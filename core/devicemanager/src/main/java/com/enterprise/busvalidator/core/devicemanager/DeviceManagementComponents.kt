@@ -61,34 +61,37 @@ class InitializationPipelineManager @Inject constructor(
     private val _initFlow = MutableStateFlow<InitStep>(InitStep.Progress("Starting Security Checks...", 10))
     val initFlow: StateFlow<InitStep> = _initFlow.asStateFlow()
 
-    suspend fun runInitializationPipeline() = withContext(Dispatchers.IO) {
+    suspend fun runInitializationPipeline(
+        activeOperatorConfig: com.enterprise.busvalidator.core.model.OperatorConfig = com.enterprise.busvalidator.core.model.OperatorPresets.BISKITA_BEKASI
+    ) = withContext(Dispatchers.IO) {
         try {
             _initFlow.value = InitStep.Progress("Verifying Root & Hardware Keystore...", 20)
-            delay(400)
+            delay(300)
 
             _initFlow.value = InitStep.Progress("Mounting Encrypted Database...", 40)
-            delay(400)
+            delay(300)
 
             _initFlow.value = InitStep.Progress("Autodetecting Hardware & SAM Slot...", 60)
+            delay(300)
+
+            _initFlow.value = InitStep.Progress("Loading Operator Profile (${activeOperatorConfig.operatorName})...", 80)
             delay(400)
 
-            _initFlow.value = InitStep.Progress("Fetching Terminal Config (MID, TID, SAM_ID)...", 80)
-            delay(500)
-
             val terminalConfig = TerminalConfig(
-                merchantId = "MID-TRANSJAKARTA-01",
+                merchantId = "MID-${activeOperatorConfig.brand.name}-01",
                 terminalId = "TID-BUS1049-VAL01",
                 pinCode = "889900",
                 processingCode = "000001",
                 samId = "SAM-CARD-99102",
-                marriageCode = "MARRIAGE-BUS-1049"
+                marriageCode = "MARRIAGE-BUS-1049",
+                operatorConfig = activeOperatorConfig
             )
 
-            _initFlow.value = InitStep.Progress("Connecting MQTT TLS Telemetry...", 95)
+            _initFlow.value = InitStep.Progress("Connecting TLS Telemetry to ${activeOperatorConfig.baseUrl}...", 95)
             delay(300)
 
             _initFlow.value = InitStep.Completed(terminalConfig)
-            logger.log("InitPipeline", "Initialization Pipeline Completed Successfully!")
+            logger.log("InitPipeline", "Initialization Pipeline Completed Successfully for ${activeOperatorConfig.operatorName}!")
         } catch (e: Exception) {
             _initFlow.value = InitStep.Failed("Initialization Failed: ${e.message}")
             logger.log("InitPipeline", "Initialization Failed: ${e.message}", isError = true)

@@ -12,8 +12,7 @@ import com.enterprise.busvalidator.core.devicemanager.InitializationPipelineMana
 import com.enterprise.busvalidator.core.devicemanager.RemoteControlManager
 import com.enterprise.busvalidator.core.hardware.drivers.VendorDriverFactory
 import com.enterprise.busvalidator.core.location.BusLocationManager
-import com.enterprise.busvalidator.core.model.TelemetryStatus
-import com.enterprise.busvalidator.core.model.TerminalConfig
+import com.enterprise.busvalidator.core.model.*
 import com.enterprise.busvalidator.core.payment.PaymentEngine
 import com.enterprise.busvalidator.feature.diagnostic.HardwareDiagnosticScreen
 import com.enterprise.busvalidator.feature.settings.SettingsScreen
@@ -44,6 +43,7 @@ class MainActivity : ComponentActivity() {
 
     private val currentScreen = mutableStateOf(Screen.SPLASH)
     private val uiTxState = mutableStateOf<UiTransactionState>(UiTransactionState.Idle)
+    private var activeOperatorConfig: OperatorConfig = OperatorPresets.BISKITA_BEKASI
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -52,7 +52,7 @@ class MainActivity : ComponentActivity() {
         remoteControlManager.listenRemoteCommands(lifecycleScope)
 
         lifecycleScope.launch {
-            initPipeline.runInitializationPipeline()
+            initPipeline.runInitializationPipeline(activeOperatorConfig)
         }
 
         setContent {
@@ -73,7 +73,7 @@ class MainActivity : ComponentActivity() {
             LaunchedEffect(initStep) {
                 if (initStep is InitStep.Completed) {
                     loadedConfig = (initStep as InitStep.Completed).config
-                    delay(500)
+                    delay(400)
                     currentScreen.value = Screen.DASHBOARD
                 }
             }
@@ -83,7 +83,7 @@ class MainActivity : ComponentActivity() {
                     InteractiveInitializationSplashScreen(
                         initStep = initStep,
                         onRetryClick = {
-                            lifecycleScope.launch { initPipeline.runInitializationPipeline() }
+                            lifecycleScope.launch { initPipeline.runInitializationPipeline(activeOperatorConfig) }
                         }
                     )
                 }
@@ -93,13 +93,21 @@ class MainActivity : ComponentActivity() {
                         terminalConfig = loadedConfig,
                         uiState = uiTxState.value,
                         onTestTap = { bankIssuer ->
-                            performTestCardTap(bankIssuer)
+                            performTestCardTap(bankIssuer, loadedConfig)
                         }
                     )
                 }
                 Screen.SETTINGS -> {
                     SettingsScreen(
+                        currentConfig = loadedConfig,
                         currentVendor = driverFactory.getActiveDeviceModel(),
+                        onOperatorSubServiceSelected = { subService ->
+                            activeOperatorConfig = OperatorPresets.getPreset(subService)
+                            currentScreen.value = Screen.SPLASH
+                            lifecycleScope.launch {
+                                initPipeline.runInitializationPipeline(activeOperatorConfig)
+                            }
+                        },
                         onVendorSelected = { model -> driverFactory.setManualVendorOverride(model) },
                         onOpenDiagnosticClick = { currentScreen.value = Screen.DIAGNOSTIC },
                         onBackClick = { currentScreen.value = Screen.DASHBOARD }
@@ -115,7 +123,7 @@ class MainActivity : ComponentActivity() {
         }
     }
 
-    private fun performTestCardTap(bankIssuer: String) {
+    private fun performTestCardTap(bankIssuer: String, terminalConfig: TerminalConfig?) {
         lifecycleScope.launch {
             val dummyUid = "A1B2C3D4"
             uiTxState.value = UiTransactionState.Processing(dummyUid)
@@ -124,13 +132,17 @@ class MainActivity : ComponentActivity() {
                 cardUid = dummyUid,
                 bankIssuer = bankIssuer,
                 initialBalance = 50_000L,
+                fareRulePolicy = terminalConfig?.operatorConfig?.fareRulePolicy,
                 writeApduExecutor = { true }
             )
 
             uiTxState.value = when (record.status) {
-                com.enterprise.busvalidator.core.model.TransactionStatus.SUCCESS -> UiTransactionState.Success(record)
-                com.enterprise.busvalidator.core.model.TransactionStatus.CARD_ALREADY_TAPPED -> UiTransactionState.CardAlreadyTapped(dummyUid)
-                com.enterprise.busvalidator.core.model.TransactionStatus.INSUFFICIENT_BALANCE -> UiTransactionState.InsufficientBalance(5000L, 35000L)
+                TransactionStatus.SUCCESS -> UiTransactionState.Success(record)
+                TransactionStatus.CARD_ALREADY_TAPPED -> UiTransactionState.CardAlreadyTapped(dummyUid)
+                TransactionStatus.INSUFFICIENT_BALANCE -> UiTransactionState.InsufficientBalance(
+                    balance = 5000L,
+                    required = terminalConfig?.baseFare ?: 4000L
+                )
                 else -> UiTransactionState.UntrustedTimeError("Time Validation Failure")
             }
 

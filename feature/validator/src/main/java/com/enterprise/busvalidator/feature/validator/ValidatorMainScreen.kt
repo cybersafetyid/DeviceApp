@@ -2,6 +2,7 @@ package com.enterprise.busvalidator.feature.validator
 
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
@@ -9,13 +10,15 @@ import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.enterprise.busvalidator.core.common.AppVersionProvider
+import com.enterprise.busvalidator.core.model.OperatorBrand
 import com.enterprise.busvalidator.core.model.TelemetryStatus
 import com.enterprise.busvalidator.core.model.TerminalConfig
 import com.enterprise.busvalidator.core.model.TransactionRecord
-import com.enterprise.busvalidator.core.model.TransactionStatus
 import java.text.SimpleDateFormat
 import java.util.*
 
@@ -29,8 +32,8 @@ sealed class UiTransactionState {
 }
 
 /**
- * International Transit Standard Dashboard UI (VDV / ITxPT Layout) with State-Screen Engine.
- * Strictly NO Popups / Dialogs.
+ * International Transit Standard Dashboard UI with Dynamic Operator Layout Engine.
+ * Supports Biskita, Citra, and Surabaya with distinct UI visual identities.
  */
 @Composable
 fun ValidatorDashboardScreen(
@@ -41,7 +44,11 @@ fun ValidatorDashboardScreen(
 ) {
     val backgroundColor by animateColorAsState(
         targetValue = when (uiState) {
-            is UiTransactionState.Idle -> Color(0xFF0F172A) // Sleek Dark Blue
+            is UiTransactionState.Idle -> when (terminalConfig?.operatorConfig?.brand) {
+                OperatorBrand.CITRA -> Color(0xFF064E3B) // Deep Emerald Slate for Citra
+                OperatorBrand.SURABAYA -> Color(0xFF450A0A) // Deep Surabaya Maroon Red
+                else -> Color(0xFF0F172A) // Sleek Dark Blue for Biskita
+            }
             is UiTransactionState.Processing -> Color(0xFF1E3A8A)
             is UiTransactionState.Success -> Color(0xFF065F46) // Vibrant Transit Green
             is UiTransactionState.CardAlreadyTapped -> Color(0xFF9A3412) // Alert Orange
@@ -58,12 +65,12 @@ fun ValidatorDashboardScreen(
             .padding(12.dp)
     ) {
         Column(modifier = Modifier.fillMaxSize()) {
-            // Top Status Bar (International Transit Telemetry)
+            // Top Status Bar
             TopTelemetryHeader(telemetry, terminalConfig)
 
             Spacer(modifier = Modifier.height(8.dp))
 
-            // Main Content Area
+            // Main Content Area (Multi-Operator Engine)
             Box(
                 modifier = Modifier
                     .weight(1f)
@@ -71,7 +78,13 @@ fun ValidatorDashboardScreen(
                 contentAlignment = Alignment.Center
             ) {
                 when (uiState) {
-                    is UiTransactionState.Idle -> IdleStateContent(terminalConfig, telemetry)
+                    is UiTransactionState.Idle -> {
+                        when (terminalConfig?.operatorConfig?.brand) {
+                            OperatorBrand.CITRA -> CitraIdleContent(terminalConfig, telemetry)
+                            OperatorBrand.SURABAYA -> SurabayaIdleContent(terminalConfig, telemetry)
+                            else -> BiskitaIdleContent(terminalConfig, telemetry)
+                        }
+                    }
                     is UiTransactionState.Processing -> ProcessingStateContent(uiState.cardUid)
                     is UiTransactionState.Success -> SuccessStateContent(uiState.record)
                     is UiTransactionState.CardAlreadyTapped -> CardAlreadyTappedContent(uiState.cardUid)
@@ -80,7 +93,7 @@ fun ValidatorDashboardScreen(
                 }
             }
 
-            // Bottom Simulator Bar for Demonstration
+            // Bottom Simulator Bar
             SimulatorActionBar(onTestTap)
         }
     }
@@ -88,6 +101,8 @@ fun ValidatorDashboardScreen(
 
 @Composable
 fun TopTelemetryHeader(telemetry: TelemetryStatus, config: TerminalConfig?) {
+    val context = LocalContext.current
+    val appVersion = remember { AppVersionProvider.getAppVersion(context) }
     val timeFormat = remember { SimpleDateFormat("HH:mm:ss | yyyy-MM-dd", Locale.US) }
     val currentTime = remember { mutableStateOf(timeFormat.format(Date())) }
 
@@ -112,13 +127,17 @@ fun TopTelemetryHeader(telemetry: TelemetryStatus, config: TerminalConfig?) {
         ) {
             Column {
                 Text(text = currentTime.value, color = Color.White, fontSize = 12.sp, fontWeight = FontWeight.Bold)
-                Text(text = "BUS: ${config?.busCode ?: "BUS-1049"} | ${config?.marriageCode ?: "MARRIAGE-OK"}", color = Color.Gray, fontSize = 10.sp)
+                Text(
+                    text = "BUS: ${config?.busCode ?: "BUS-1049"} | ${appVersion.formattedVersion}",
+                    color = Color(0xFF94A3B8),
+                    fontSize = 10.sp
+                )
             }
 
             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                StatusBadge(text = config?.operatorConfig?.subService?.displayName ?: "BISKITA", color = Color(0xFF38BDF8))
                 StatusBadge(text = if (telemetry.isOnline) "ONLINE" else "OFFLINE", color = if (telemetry.isOnline) Color(0xFF10B981) else Color(0xFFF59E0B))
                 StatusBadge(text = "GPS: 3D (${telemetry.gpsSatellites} Sats)", color = Color(0xFF3B82F6))
-                StatusBadge(text = "${telemetry.networkType} ${telemetry.signalDbm}dBm", color = Color(0xFF8B5CF6))
             }
         }
     }
@@ -135,22 +154,222 @@ fun StatusBadge(text: String, color: Color) {
     }
 }
 
+/**
+ * BISKITA UI Layout: Clean ITxPT Cyan & Dark Blue Theme.
+ */
 @Composable
-fun IdleStateContent(config: TerminalConfig?, telemetry: TelemetryStatus) {
+fun BiskitaIdleContent(config: TerminalConfig?, telemetry: TelemetryStatus) {
+    val farePolicy = config?.operatorConfig?.fareRulePolicy
+
     Column(
         horizontalAlignment = Alignment.CenterHorizontally,
         verticalArrangement = Arrangement.Center
     ) {
-        Text(text = config?.operatorName ?: "TRANSJAKARTA", color = Color(0xFF38BDF8), fontSize = 24.sp, fontWeight = FontWeight.Bold)
-        Text(text = "${config?.routeCode} : ${config?.routeName}", color = Color.White, fontSize = 18.sp, fontWeight = FontWeight.Medium)
-        Spacer(modifier = Modifier.height(16.dp))
-        Text(text = "TEMPELKAN KARTU / SCAN QRIS", color = Color.Yellow, fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
-        Text(text = "TARIF: Rp ${config?.baseFare ?: 3500}", color = Color.LightGray, fontSize = 16.sp)
+        Surface(
+            color = Color(0xFF0284C7).copy(alpha = 0.2f),
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.padding(bottom = 8.dp)
+        ) {
+            Text(
+                text = "🚌 BISKITA TRANSIT NETWORK",
+                color = Color(0xFF38BDF8),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+        }
 
-        Spacer(modifier = Modifier.height(24.dp))
+        Text(
+            text = config?.operatorName ?: "BISKITA BEKASI",
+            color = Color(0xFF38BDF8),
+            fontSize = 26.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "${config?.routeCode ?: "BK-01"} : ${config?.routeName ?: "Terminal Bekasi - Harapan Indah"}",
+            color = Color.White,
+            fontSize = 18.sp,
+            fontWeight = FontWeight.Medium
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Surface(
+            color = Color(0xFF1E293B),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth(0.9f)
+                .border(1.dp, Color(0xFF0284C7), RoundedCornerShape(12.dp))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(text = "TEMPELKAN KARTU / SCAN QRIS", color = Color(0xFFFACC15), fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(text = "TARIF UTAMA: Rp ${farePolicy?.baseFare ?: 4000}", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Pelajar: Rp ${farePolicy?.studentFare ?: 2000} | Lansia/Disabilitas: Rp ${farePolicy?.seniorCitizenFare ?: 0}",
+                    color = Color.LightGray,
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
         Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
             InfoCard(title = "Hari Ini", value = "${telemetry.dailyTransactionCount} Tx")
             InfoCard(title = "Pending Sync", value = "${telemetry.pendingSyncCount}")
+            InfoCard(title = "Device Model", value = config?.operatorConfig?.supportedHardwareModels?.joinToString("/") ?: "E60Q")
+        }
+    }
+}
+
+/**
+ * CITRA UI Layout: Emerald & Gold Township Estate Theme.
+ */
+@Composable
+fun CitraIdleContent(config: TerminalConfig?, telemetry: TelemetryStatus) {
+    val farePolicy = config?.operatorConfig?.fareRulePolicy
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Surface(
+            color = Color(0xFFD97706).copy(alpha = 0.25f),
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.padding(bottom = 8.dp)
+        ) {
+            Text(
+                text = "🏡 CITRA TOWNSHIP RESIDENTIAL SHUTTLE",
+                color = Color(0xFFFBBF24),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+        }
+
+        Text(
+            text = config?.operatorName ?: "CITRA RAYA SHUTTLE",
+            color = Color(0xFF10B981),
+            fontSize = 26.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "${config?.routeCode ?: "CR-01"} : ${config?.routeName ?: "Citra Raya Shuttle - EcoPlaza Loop"}",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Surface(
+            color = Color(0xFF064E3B),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .border(2.dp, Color(0xFF10B981), RoundedCornerShape(12.dp))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(text = "TAP RESIDENT CARD / E-MONEY", color = Color(0xFFFBBF24), fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(text = "TARIF SHUTTLE: Rp ${farePolicy?.baseFare ?: 5000}", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Resident/Pelajar: Rp ${farePolicy?.studentFare ?: 3000} | Lansia: Rp ${farePolicy?.seniorCitizenFare ?: 2500}",
+                    color = Color(0xFFA7F3D0),
+                    fontSize = 12.sp
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            InfoCard(title = "Shuttle Tx", value = "${telemetry.dailyTransactionCount}")
+            InfoCard(title = "Zone", value = "Estate Core")
+            InfoCard(title = "Models", value = config?.operatorConfig?.supportedHardwareModels?.joinToString("/") ?: "E60V2")
+        }
+    }
+}
+
+/**
+ * SURABAYA UI Layout: Municipal Red & Amber Suroboyo / Wara Wiri Theme.
+ */
+@Composable
+fun SurabayaIdleContent(config: TerminalConfig?, telemetry: TelemetryStatus) {
+    val farePolicy = config?.operatorConfig?.fareRulePolicy
+
+    Column(
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.Center
+    ) {
+        Surface(
+            color = Color(0xFFDC2626).copy(alpha = 0.25f),
+            shape = RoundedCornerShape(20.dp),
+            modifier = Modifier.padding(bottom = 8.dp)
+        ) {
+            Text(
+                text = "🐊 SURABAYA MUNICIPAL TRANSIT SYSTEM",
+                color = Color(0xFFF87171),
+                fontSize = 12.sp,
+                fontWeight = FontWeight.Bold,
+                modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp)
+            )
+        }
+
+        Text(
+            text = config?.operatorName ?: "BUS SURABAYA",
+            color = Color(0xFFFBBF24),
+            fontSize = 24.sp,
+            fontWeight = FontWeight.Bold
+        )
+        Text(
+            text = "${config?.routeCode ?: "SB-01"} : ${config?.routeName ?: "Suroboyo Bus Purabaya - Rajawali"}",
+            color = Color.White,
+            fontSize = 16.sp,
+            fontWeight = FontWeight.Medium
+        )
+
+        Spacer(modifier = Modifier.height(16.dp))
+
+        Surface(
+            color = Color(0xFF7F1D1D),
+            shape = RoundedCornerShape(12.dp),
+            modifier = Modifier
+                .fillMaxWidth(0.92f)
+                .border(2.dp, Color(0xFFFBBF24), RoundedCornerShape(12.dp))
+        ) {
+            Column(
+                modifier = Modifier.padding(16.dp),
+                horizontalAlignment = Alignment.CenterHorizontally
+            ) {
+                Text(text = "TAP E-MONEY / SCAN QRIS", color = Color(0xFFFBBF24), fontSize = 20.sp, fontWeight = FontWeight.ExtraBold)
+                Spacer(modifier = Modifier.height(6.dp))
+                Text(text = "TARIF FLAT: Rp ${farePolicy?.baseFare ?: 5000}", color = Color.White, fontSize = 16.sp, fontWeight = FontWeight.Bold)
+                Text(
+                    text = "Pelajar/Veteran: Rp ${farePolicy?.studentFare ?: 2500} | Gratis Lansia & Disabilitas",
+                    color = Color(0xFFFECACA),
+                    fontSize = 12.sp
+                )
+                Spacer(modifier = Modifier.height(4.dp))
+                Text(
+                    text = "⚡ Integrasi Feeder Wara Wiri - Suroboyo Bus (Free Transfer 30 Mins)",
+                    color = Color.Yellow,
+                    fontSize = 11.sp,
+                    fontWeight = FontWeight.SemiBold
+                )
+            }
+        }
+
+        Spacer(modifier = Modifier.height(20.dp))
+        Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
+            InfoCard(title = "Municipal Tx", value = "${telemetry.dailyTransactionCount}")
+            InfoCard(title = "Transfer Window", value = "30 Mins")
+            InfoCard(title = "Model", value = config?.operatorConfig?.supportedHardwareModels?.joinToString("/") ?: "Q6")
         }
     }
 }
@@ -161,9 +380,9 @@ fun InfoCard(title: String, value: String) {
         color = Color(0xFF1E293B),
         shape = RoundedCornerShape(8.dp)
     ) {
-        Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
+        Column(modifier = Modifier.padding(horizontal = 14.dp, vertical = 8.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             Text(text = title, color = Color.Gray, fontSize = 10.sp)
-            Text(text = value, color = Color.White, fontSize = 14.sp, fontWeight = FontWeight.Bold)
+            Text(text = value, color = Color.White, fontSize = 13.sp, fontWeight = FontWeight.Bold)
         }
     }
 }

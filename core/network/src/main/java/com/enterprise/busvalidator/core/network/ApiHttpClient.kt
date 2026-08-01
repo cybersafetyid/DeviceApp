@@ -32,10 +32,10 @@ class ApiHttpClient @Inject constructor(
         }
     }
 
-    suspend fun getTerminalConfig(): String {
-        val baseUrl = securityVault.getSecureBaseUrl()
+    suspend fun getTerminalConfig(operatorBaseUrl: String? = null): String {
+        val baseUrl = securityVault.getSecureBaseUrl(operatorBaseUrl)
         val url = "$baseUrl/terminal/config"
-        logger.log("ApiClient", "Fetching terminal config from secure URL...")
+        logger.log("ApiClient", "Fetching terminal config from URL: $url")
 
         return try {
             val response: HttpResponse = client.get(url) {
@@ -48,7 +48,7 @@ class ApiHttpClient @Inject constructor(
         } catch (e: Exception) {
             logger.log("ApiClient", "Network request failed: ${e.message}", isError = true)
             // Fallback cached configuration
-            """{"status":"SUCCESS","mid":"MID-TRANSJAKARTA-01","tid":"TID-BUS1049-VAL01"}"""
+            """{"status":"SUCCESS","mid":"MID-BUS-01","tid":"TID-BUS1049-VAL01"}"""
         }
     }
 }
