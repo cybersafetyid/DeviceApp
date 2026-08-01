@@ -1,6 +1,6 @@
 package com.enterprise.busvalidator.core.security
 
-import java.io.DataOutputStream
+import java.util.concurrent.TimeUnit
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -14,24 +14,35 @@ open class SuManager @Inject constructor(
 ) {
     open fun isRootAvailable(): Boolean {
         return try {
-            val process = Runtime.getRuntime().exec("su -c id")
-            val exitCode = process.waitFor()
-            exitCode == 0
+            val process = ProcessBuilder("su", "-c", "id").start()
+            if (!process.waitFor(ROOT_COMMAND_TIMEOUT_SECONDS, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                return false
+            }
+            process.exitValue() == 0
         } catch (e: Exception) {
             false
         }
     }
 
-    fun executeRootCommand(command: String): Boolean {
+    fun executeRootCommand(
+        command: String,
+        timeoutSeconds: Long = ROOT_COMMAND_TIMEOUT_SECONDS
+    ): Boolean {
         return try {
             logger.log("SuManager", "Executing root command: $command")
-            val process = Runtime.getRuntime().exec("su")
-            DataOutputStream(process.outputStream).use { dos ->
-                dos.writeBytes("$command\n")
-                dos.writeBytes("exit\n")
-                dos.flush()
+            val process = ProcessBuilder("su", "-c", command).start()
+            if (!process.waitFor(timeoutSeconds, TimeUnit.SECONDS)) {
+                process.destroyForcibly()
+                logger.log("SuManager", "Root command timed out after ${timeoutSeconds}s", isError = true)
+                return false
             }
-            val result = process.waitFor() == 0
+
+            val result = process.exitValue() == 0
+            if (!result) {
+                val errorText = process.errorStream.bufferedReader().use { it.readText() }.take(500)
+                logger.log("SuManager", "Root command failed: $errorText", isError = true)
+            }
             logger.log("SuManager", "Command result: $result")
             result
         } catch (e: Exception) {
@@ -51,5 +62,9 @@ open class SuManager @Inject constructor(
     fun setSystemTime(utcMillis: Long): Boolean {
         val seconds = utcMillis / 1000
         return executeRootCommand("date -u @$seconds || date -s @$seconds")
+    }
+
+    private companion object {
+        const val ROOT_COMMAND_TIMEOUT_SECONDS = 15L
     }
 }

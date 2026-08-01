@@ -14,6 +14,7 @@ import com.enterprise.busvalidator.core.hardware.drivers.VendorDriverFactory
 import com.enterprise.busvalidator.core.location.BusLocationManager
 import com.enterprise.busvalidator.core.model.*
 import com.enterprise.busvalidator.core.payment.PaymentEngine
+import com.enterprise.busvalidator.core.security.RuntimePermissionProvisioner
 import com.enterprise.busvalidator.feature.diagnostic.HardwareDiagnosticScreen
 import com.enterprise.busvalidator.feature.settings.SettingsScreen
 import com.enterprise.busvalidator.feature.validator.InteractiveInitializationSplashScreen
@@ -40,6 +41,7 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var locationManager: BusLocationManager
     @Inject lateinit var remoteControlManager: RemoteControlManager
     @Inject lateinit var transactionDao: TransactionDao
+    @Inject lateinit var permissionProvisioner: RuntimePermissionProvisioner
 
     private val currentScreen = mutableStateOf(Screen.SPLASH)
     private val uiTxState = mutableStateOf<UiTransactionState>(UiTransactionState.Idle)
@@ -48,10 +50,10 @@ class MainActivity : ComponentActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
 
-        locationManager.startLocationTracking()
-        remoteControlManager.listenRemoteCommands(lifecycleScope)
-
         lifecycleScope.launch {
+            permissionProvisioner.ensureProvisioned()
+            locationManager.startLocationTracking()
+            remoteControlManager.listenRemoteCommands(lifecycleScope)
             initPipeline.runInitializationPipeline(activeOperatorConfig)
         }
 
@@ -71,21 +73,24 @@ class MainActivity : ComponentActivity() {
             }
 
             LaunchedEffect(initStep) {
-                if (initStep is InitStep.Completed) {
-                    loadedConfig = (initStep as InitStep.Completed).config
-                    delay(400)
-                    currentScreen.value = Screen.DASHBOARD
+                when (val step = initStep) {
+                    is InitStep.Completed -> {
+                        loadedConfig = step.config
+                        delay(400)
+                        currentScreen.value = Screen.DASHBOARD
+                    }
+                    is InitStep.Failed -> {
+                        delay(2_000)
+                        permissionProvisioner.ensureProvisioned()
+                        initPipeline.runInitializationPipeline(activeOperatorConfig)
+                    }
+                    is InitStep.Progress -> Unit
                 }
             }
 
             when (currentScreen.value) {
                 Screen.SPLASH -> {
-                    InteractiveInitializationSplashScreen(
-                        initStep = initStep,
-                        onRetryClick = {
-                            lifecycleScope.launch { initPipeline.runInitializationPipeline(activeOperatorConfig) }
-                        }
-                    )
+                    InteractiveInitializationSplashScreen(initStep = initStep)
                 }
                 Screen.DASHBOARD -> {
                     ValidatorDashboardScreen(
@@ -105,6 +110,7 @@ class MainActivity : ComponentActivity() {
                             activeOperatorConfig = OperatorPresets.getPreset(subService)
                             currentScreen.value = Screen.SPLASH
                             lifecycleScope.launch {
+                                permissionProvisioner.ensureProvisioned()
                                 initPipeline.runInitializationPipeline(activeOperatorConfig)
                             }
                         },

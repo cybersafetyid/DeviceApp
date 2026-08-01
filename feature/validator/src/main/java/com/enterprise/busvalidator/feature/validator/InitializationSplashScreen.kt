@@ -17,8 +17,7 @@ import com.enterprise.busvalidator.core.devicemanager.InitStep
 
 @Composable
 fun InteractiveInitializationSplashScreen(
-    initStep: InitStep,
-    onRetryClick: () -> Unit
+    initStep: InitStep
 ) {
     val context = LocalContext.current
     val appVersion = remember { AppVersionProvider.getAppVersion(context) }
@@ -85,9 +84,9 @@ fun InteractiveInitializationSplashScreen(
                             Spacer(modifier = Modifier.height(8.dp))
                             Text(text = initStep.errorReason, color = Color.Yellow, fontSize = 14.sp)
                             Spacer(modifier = Modifier.height(16.dp))
-                            Button(onClick = onRetryClick, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFDC2626))) {
-                                Text("RETRY (ENTER)", color = Color.White)
-                            }
+                            CircularProgressIndicator(color = Color.White, modifier = Modifier.size(32.dp))
+                            Spacer(modifier = Modifier.height(8.dp))
+                            Text(text = "AUTO RECOVERY ACTIVE", color = Color.White, fontSize = 12.sp)
                         }
                     }
                 }
