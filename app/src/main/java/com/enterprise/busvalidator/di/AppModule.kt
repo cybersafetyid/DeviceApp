@@ -1,5 +1,7 @@
 package com.enterprise.busvalidator.di
 
+import com.enterprise.busvalidator.core.common.AppDispatchers
+import com.enterprise.busvalidator.core.common.DefaultAppDispatchers
 import com.enterprise.busvalidator.core.hardware.api.*
 import com.enterprise.busvalidator.core.hardware.drivers.VendorDriverFactory
 import dagger.Module
@@ -11,6 +13,10 @@ import javax.inject.Singleton
 @Module
 @InstallIn(SingletonComponent::class)
 object AppModule {
+
+    @Provides
+    @Singleton
+    fun provideAppDispatchers(dispatchers: DefaultAppDispatchers): AppDispatchers = dispatchers
 
     @Provides
     @Singleton

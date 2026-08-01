@@ -237,6 +237,35 @@ enum class TimeConfidenceState {
     TIME_UNTRUSTED
 }
 
+object DeviceIdentity {
+    const val DEFAULT_DEVICE_ID = "BUS-1049-VAL01"
+}
+
+data class BusLocationSnapshot(
+    val deviceId: String = DeviceIdentity.DEFAULT_DEVICE_ID,
+    val recordedAtUtc: Long,
+    val provider: String,
+    val latitude: Double,
+    val longitude: Double,
+    val altitudeMeters: Double?,
+    val accuracyMeters: Float?,
+    val verticalAccuracyMeters: Float?,
+    val bearingDegrees: Float?,
+    val bearingAccuracyDegrees: Float?,
+    val speedMetersPerSecond: Float?,
+    val speedAccuracyMetersPerSecond: Float?,
+    val elapsedRealtimeNanos: Long,
+    val satelliteCount: Int?,
+    val isMock: Boolean
+)
+
+data class LocationTelemetryPayload(
+    val locationLogId: Long?,
+    val snapshot: BusLocationSnapshot,
+    val pendingLocationLogCount: Int,
+    val deliveryAttempt: Int
+)
+
 enum class PassengerProfile {
     GENERAL,
     SENIOR_CITIZEN, // Lansia

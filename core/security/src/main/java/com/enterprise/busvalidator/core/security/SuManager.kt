@@ -55,8 +55,32 @@ open class SuManager @Inject constructor(
         return executeRootCommand("reboot")
     }
 
-    fun installApkSilently(apkFilePath: String): Boolean {
-        return executeRootCommand("pm install -r '$apkFilePath' && am start -n com.enterprise.busvalidator/.MainActivity")
+    fun restartApp(
+        packageName: String,
+        launcherActivity: String = ".MainActivity"
+    ): Boolean {
+        val component = "$packageName/$launcherActivity"
+        return executeRootCommand(
+            command = "am force-stop ${packageName.shellQuote()} && am start -n ${component.shellQuote()}",
+            timeoutSeconds = ROOT_COMMAND_TIMEOUT_SECONDS
+        )
+    }
+
+    fun installApkSilently(
+        apkFilePath: String,
+        packageName: String = "com.enterprise.busvalidator",
+        launcherActivity: String = ".MainActivity",
+        restartAfterInstall: Boolean = true
+    ): Boolean {
+        val restartCommand = if (restartAfterInstall) {
+            " && sleep 2 && am start -n ${"$packageName/$launcherActivity".shellQuote()}"
+        } else {
+            ""
+        }
+        return executeRootCommand(
+            command = "chmod 0644 ${apkFilePath.shellQuote()} && pm install -r ${apkFilePath.shellQuote()}$restartCommand",
+            timeoutSeconds = APK_INSTALL_TIMEOUT_SECONDS
+        )
     }
 
     fun setSystemTime(utcMillis: Long): Boolean {
@@ -66,5 +90,8 @@ open class SuManager @Inject constructor(
 
     private companion object {
         const val ROOT_COMMAND_TIMEOUT_SECONDS = 15L
+        const val APK_INSTALL_TIMEOUT_SECONDS = 180L
     }
 }
+
+private fun String.shellQuote(): String = "'${replace("'", "'\"'\"'")}'"

@@ -1,34 +1,84 @@
-# Multi-Layer Time Validation Engine
+# Time Validation
 
-## The Problem
-Time skew or clock jumps (backward/forward) cause severe **bank settlement rejections** (BCA, Mandiri, BNI, BRI, Bank DKI, Nobu, QRIS) and break SAM module APDU authentication. Since validators operate offline and in moving buses, cellular time (NITZ) is notoriously unreliable, and malicious tampering of the device clock is a major threat.
+## Problem
 
-## 4-Layer Cryptographic & Monotonic Time Engine
+Payment timestamps are settlement-critical. A validator can be offline, rebooted, or tampered with, so the app needs confidence that wall-clock time has not jumped backward or drifted beyond tolerance.
 
-To guarantee settlement time compliance and protect public funds, the validator implements a 4-Layer Time Validation Engine.
+## Current Implementation
 
-### Layer 1: Multi-Source Time Synchronization Pipeline
-The device constantly seeks the true UTC time from multiple redundant sources:
-1. **Source A (GPS NMEA Atomic Time):** Extracts absolute UTC atomic time directly from raw GPS NMEA sentences (`$GPRMC` / `$GPZDA`). This works 100% offline without cellular data as long as there is an open sky.
-2. **Source B (NTP Stratum-1/2 Pools):** Queries reliable time servers (`pool.ntp.org` / `time.google.com`) via SNTP protocol when a network connection is available.
-3. **Source C (NITZ):** Intercepts cell tower NITZ broadcast time from the SIM card provider (used as a fallback).
-4. **Source D (Hardware RTC Node):** Reads hardware RTC `/dev/rtc0` via JNI/Root for low-level verification.
+Current code is in `core/security/MultiSourceTimeSyncEngine.kt`.
 
-### Layer 2: Monotonic Drift Guard (`MonotonicTimeGuard`)
-Android's `SystemClock.elapsedRealtimeNanos()` never decreases and cannot be tampered with by the user or network settings. We use it to compute true elapsed time velocity.
-- Calculation: $\Delta t_{real} = \text{elapsedRealtimeNanos}() - \text{lastReferenceNanos}$
-- If the system wall clock (`System.currentTimeMillis()`) diverges from $\Delta t_{real}$ by more than $\pm 5$ seconds, a **Clock Drift Anomaly** is flagged.
+Implemented:
 
-### Layer 3: Persisted Monotonic Time Checkpoint Ledger
-Every transaction and encrypted log commit writes a time checkpoint (`last_valid_utc_timestamp`) to the Room Database.
-- Upon device boot or app startup, if `CurrentSystemTime < LastPersistedTimestamp`, the engine definitively detects **Backward Time Tampering** or an RTC battery failure.
+- `StateFlow<TimeConfidenceState>`.
+- Initial state `SECURE_SYNCED`.
+- Monotonic guard using `SystemClock.elapsedRealtimeNanos()`.
+- Backward time check against in-memory `lastPersistedTimestampMs`.
+- Drift threshold of 5000 ms.
+- GPS NMEA hook through `onGpsNmeaTimeReceived(rawNmea)`.
+- `$GPRMC` parser for UTC timestamp.
+- Root time correction via `SuManager.setSystemTime()` when skew exceeds 3000 ms and root is available.
+- Manual checkpoint update through `updatePersistedCheckpoint(timestampMs)`.
 
-### Layer 4: Time Confidence Transaction Gate (`TimeConfidenceGate`)
-This gatekeeper controls whether payment transactions are allowed based on the aggregated time state.
+Not implemented yet:
 
-- **SECURE_SYNCED:** Verified recently by GPS, NTP, or NITZ. Full card/QR transactions allowed.
-- **MONOTONIC_VALIDATED:** Verified by the Monotonic Hardware offset since the last secure sync. Full transactions allowed.
-- **TIME_UNTRUSTED:** Detected a backward jump, an unverified clock at boot, or a skew > 30 seconds.
-  - **Action:** All payment transactions are **INSTANTLY SUSPENDED**.
-  - **UI State:** Displays `UNTRUSTED_SYSTEM_TIME` with a warning sound and red LED.
-  - **Auto-Recovery:** The system silently executes a root command (`su -c date -s ...`) to force update the Android system clock from GPS NMEA atomic time or NTP, restoring service automatically.
+- NTP client.
+- NITZ listener.
+- RTC `/dev/rtc0` reader.
+- Persisted checkpoint stored in database/shared storage across process death.
+- Direct integration from `BusLocationManager` NMEA listener into this engine.
+- Payment queue suspension UI driven directly from `timeConfidence` outside payment result state.
+
+## State Machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> SECURE_SYNCED
+    SECURE_SYNCED --> TIME_UNTRUSTED: backward time or drift > 5000 ms
+    MONOTONIC_VALIDATED --> TIME_UNTRUSTED: backward time or drift > 5000 ms
+    TIME_UNTRUSTED --> MONOTONIC_VALIDATED: validateMonotonicVelocity passes after untrusted
+    TIME_UNTRUSTED --> SECURE_SYNCED: validateAndUpdateTime trusted source
+    SECURE_SYNCED --> SECURE_SYNCED: trusted GPS update
+```
+
+## Payment Gate
+
+`PaymentEngine.processCardApduFlow()` rejects card transactions when:
+
+```kotlin
+timeSyncEngine.timeConfidence.value == TimeConfidenceState.TIME_UNTRUSTED
+```
+
+The rejection path:
+
+- Logs error.
+- Sets failed LED.
+- Plays failed beep.
+- Returns `TransactionStatus.UNTRUSTED_TIME_REJECTED`.
+
+QRIS flow does not currently perform the same explicit time-confidence check. Add parity if QRIS settlement requires the same timestamp guarantees.
+
+## GPS Integration Gap
+
+`BusLocationManager` currently requests GPS location updates but does not register an NMEA listener. To complete GPS time source:
+
+1. Add Android NMEA listener in `BusLocationManager`.
+2. Pass raw `$GPRMC`/`$GPZDA` sentences to `MultiSourceTimeSyncEngine.onGpsNmeaTimeReceived()`.
+3. Handle runtime permission failure as degraded time confidence.
+4. Add tests for valid/invalid NMEA payloads.
+
+## Production Extension Path
+
+```mermaid
+flowchart TD
+    GPS["GPS NMEA"] --> Aggregator["Time source aggregator"]
+    NTP["NTP/SNTP"] --> Aggregator
+    NITZ["NITZ"] --> Aggregator
+    RTC["Hardware RTC"] --> Aggregator
+    Aggregator --> Engine["MultiSourceTimeSyncEngine"]
+    Engine --> PersistedCheckpoint["Persisted checkpoint"]
+    Engine --> PaymentGate["Payment gate"]
+    Engine --> UI["Out-of-service/time warning UI"]
+```
+
+Do not mark time validation production-ready until at least one trusted source and persisted checkpoint survive reboot and are verified on target hardware.

@@ -1,6 +1,9 @@
 package com.enterprise.busvalidator.core.devicemanager
 
 import com.enterprise.busvalidator.core.model.TerminalConfig
+import com.enterprise.busvalidator.core.devicemanager.ota.AppUpdateManager
+import com.enterprise.busvalidator.core.devicemanager.ota.OtaCommandParser
+import com.enterprise.busvalidator.core.devicemanager.ota.OtaUpdateResult
 import com.enterprise.busvalidator.core.network.MqttTelemetryClient
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.enterprise.busvalidator.core.security.MultiSourceTimeSyncEngine
@@ -106,19 +109,46 @@ class InitializationPipelineManager @Inject constructor(
 class RemoteControlManager @Inject constructor(
     private val suManager: SuManager,
     private val logger: EncryptedLogger,
-    private val mqttTelemetryClient: MqttTelemetryClient
+    private val mqttTelemetryClient: MqttTelemetryClient,
+    private val appUpdateManager: AppUpdateManager
 ) {
+    private var remoteCommandJob: Job? = null
+
     fun listenRemoteCommands(scope: CoroutineScope) {
-        scope.launch {
+        if (remoteCommandJob?.isActive == true) return
+
+        remoteCommandJob = scope.launch {
             mqttTelemetryClient.remoteCommandFlow.collect { (action, params) ->
-                logger.log("RemoteControl", "Received Remote Command: Action=$action, Params=$params")
-                when (action.lowercase()) {
+                val normalizedAction = action.lowercase()
+                val loggedParams = if (normalizedAction == "cmd_ota_update") "[redacted]" else params
+                logger.log("RemoteControl", "Received Remote Command: Action=$action, Params=$loggedParams")
+                when (normalizedAction) {
                     "cmd_reboot" -> suManager.rebootDevice()
-                    "cmd_restart_app" -> suManager.executeRootCommand("am force-stop com.enterprise.busvalidator && am start -n com.enterprise.busvalidator/.MainActivity")
+                    "cmd_restart_app" -> suManager.restartApp("com.enterprise.busvalidator")
+                    "cmd_ota_update" -> executeOtaUpdate(params)
                     "cmd_clear_cache" -> System.gc()
                     else -> logger.log("RemoteControl", "Unknown command: $action")
                 }
             }
+        }
+    }
+
+    private suspend fun executeOtaUpdate(params: String) {
+        val request = OtaCommandParser.parse(params).getOrElse { error ->
+            logger.log("RemoteControl", "Invalid OTA command: ${error.message}", isError = true)
+            return
+        }
+
+        when (val result = appUpdateManager.performOtaUpdate(request)) {
+            is OtaUpdateResult.Success -> logger.log(
+                "RemoteControl",
+                "OTA update installed: package=${result.packageName}, versionCode=${result.versionCode}, sha256=${result.sha256}"
+            )
+            is OtaUpdateResult.Failed -> logger.log(
+                "RemoteControl",
+                "OTA update failed at ${result.stage}: ${result.reason}",
+                isError = true
+            )
         }
     }
 }

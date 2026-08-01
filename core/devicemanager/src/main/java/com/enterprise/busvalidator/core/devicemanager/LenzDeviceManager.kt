@@ -36,12 +36,14 @@ class LenzDeviceManager @Inject constructor(
         }
     }
 
-    fun installApp(apkPath: String) {
+    fun installApp(apkPath: String): Boolean {
         logger.log("DeviceManager", "Installing APK from path: $apkPath")
-        try {
+        return try {
             lenzSystemManager.setInstallApkPath(apkPath)
+            true
         } catch (e: Exception) {
             logger.log("DeviceManager", "Install failed: ${e.message}", isError = true)
+            false
         }
     }
 

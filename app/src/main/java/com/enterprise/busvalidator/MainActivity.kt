@@ -9,7 +9,6 @@ import androidx.lifecycle.lifecycleScope
 import com.enterprise.busvalidator.core.database.TransactionDao
 import com.enterprise.busvalidator.core.devicemanager.InitStep
 import com.enterprise.busvalidator.core.devicemanager.InitializationPipelineManager
-import com.enterprise.busvalidator.core.devicemanager.RemoteControlManager
 import com.enterprise.busvalidator.core.hardware.drivers.VendorDriverFactory
 import com.enterprise.busvalidator.core.location.BusLocationManager
 import com.enterprise.busvalidator.core.model.*
@@ -39,7 +38,6 @@ class MainActivity : ComponentActivity() {
     @Inject lateinit var paymentEngine: PaymentEngine
     @Inject lateinit var driverFactory: VendorDriverFactory
     @Inject lateinit var locationManager: BusLocationManager
-    @Inject lateinit var remoteControlManager: RemoteControlManager
     @Inject lateinit var transactionDao: TransactionDao
     @Inject lateinit var permissionProvisioner: RuntimePermissionProvisioner
 
@@ -53,7 +51,6 @@ class MainActivity : ComponentActivity() {
         lifecycleScope.launch {
             permissionProvisioner.ensureProvisioned()
             locationManager.startLocationTracking()
-            remoteControlManager.listenRemoteCommands(lifecycleScope)
             initPipeline.runInitializationPipeline(activeOperatorConfig)
         }
 

@@ -1,40 +1,122 @@
-# Architecture Blueprint
+# Architecture
 
-## System Overview
-The Enterprise Bus Validator App is built on a clean, scalable, fully modular Android architecture utilizing Kotlin and Jetpack Compose. It is designed to run 24/7 on dedicated enterprise hardware with offline-first capabilities, prioritizing extreme reliability, security, and low resource utilization.
+Dokumen ini menjelaskan arsitektur yang benar-benar ada di source saat ini. Untuk status ringkas, mulai dari `README.md`.
 
-## Multi-Module Structure
+## Technical Restatement
 
-The application is divided into several modules to enforce separation of concerns, improve build times, and enable high scalability across different hardware vendors and transit operators.
+DeviceApp adalah Android multi-module app untuk validator bus dedicated. Batas utama sistem:
 
+- `app` sebagai composition root, lifecycle host, DI host, manifest, boot/device-admin receiver.
+- `core:*` sebagai domain/infrastructure reusable modules.
+- `feature:*` sebagai Compose UI modules.
+- Vendor SDK harus tetap berada di layer hardware/device-management, tidak bocor ke UI/payment/domain.
+
+## Constraints
+
+- Dedicated unattended hardware, sehingga boot recovery, HOME activity, root provisioning, dan Device Owner fallback adalah bagian dari lifecycle.
+- Payment harus serialized agar tidak ada dua flow transaksi berjalan bersamaan.
+- Database lokal adalah source of truth offline untuk transaction ledger.
+- UI harus fullscreen dan bisa dioperasikan dengan physical key.
+- Emulator/non-root hanya valid untuk build, UI, dan sebagian unit test; bukan acceptance device.
+
+## Module Ownership
+
+| Module | Ownership | Notes |
+| --- | --- | --- |
+| `:app` | Application lifecycle, Hilt composition root, manifest permissions, receiver, screen routing. | Injects all core services into `MainActivity` and `BusValidatorApplication`. |
+| `:core:common` | Shared utility. | Dispatchers, version provider, date/crypto helpers, result wrapper. |
+| `:core:model` | Domain model and operator presets. | No Android framework dependency beyond Gradle Android library shell. |
+| `:core:database` | Room/SQLCipher persistence. | Current schema version 2 with transaction and 7-day location-log storage. |
+| `:core:security` | Logger, root shell, time confidence, permission provisioning, vault/decryptor. | Contains hard-coded secrets that must be replaced before production. |
+| `:core:network` | Ktor HTTP and Paho MQTT. | MQTT has reconnect loop and QoS 1 location publish; Ktor is used for API fallback telemetry. |
+| `:core:hardware-api` | HAL contracts. | Stable interfaces consumed by app/core/features. |
+| `:core:hardware-drivers` | Vendor adapters and driver factory. | E60Q/E60V2 have adapters; other vendors fallback/default. |
+| `:core:payment` | Business payment pipeline. | Owns time gate, anti-passback, APDU/QRIS processing, transaction commit. |
+| `:core:sync` | Offline sync manager and telemetry sync orchestration. | Transaction upload remains simulated; location telemetry persists, retries, falls back to API, and prunes after 7 days. |
+| `:core:location` | Android GPS/network location updates. | Emits full location snapshots, GNSS satellite count, and forwards GPS NMEA time sentences to the time engine. |
+| `:core:devicemanager` | Watchdog, initialization, remote command, LENZ wrapper. | Remote commands are limited to reboot/restart/clear-cache today. |
+| `:feature:validator` | Main dashboard and transaction state UI. | Compose UI only. |
+| `:feature:settings` | Operator/vendor settings UI. | Calls callbacks owned by `MainActivity`. |
+| `:feature:diagnostic` | Diagnostic UI/ViewModel. | Uses injected HAL and LENZ manager. |
+
+## Dependency Direction
+
+```mermaid
+flowchart TD
+    app[app] --> feature[feature modules]
+    app --> core[core modules]
+    feature --> core
+    core --> model[core:model]
+    core --> common[core:common]
+    payment[core:payment] --> database[core:database]
+    payment --> hardwareApi[core:hardware-api]
+    payment --> security[core:security]
+    hardwareDrivers[core:hardware-drivers] --> hardwareApi
+    hardwareDrivers --> vendorSdk[compileOnly vendor SDK]
+    devicemanager[core:devicemanager] --> vendorSdk
 ```
-DeviceApp/
-├── app/                      # Application entry point and Dependency Injection (Hilt/Koin) setup.
-├── core/                     # Foundational libraries and shared logic.
-│   ├── common/               # Shared utilities, extensions, and constants.
-│   ├── model/                # Domain business models, config objects, state enums.
-│   ├── database/             # Encrypted Room DB & Persisted Time Checkpoint Ledger.
-│   ├── network/              # Ktor Client, NTP Time Sync, MQTT Telemetry/Push.
-│   ├── security/             # Multi-Layer Time Validation & Monotonic Drift Guard, Encrypted Logger.
-│   ├── hardware-api/         # HAL interface contracts (NFC, SAM, Serial, Scanner, etc.).
-│   ├── hardware-drivers/     # Vendor-specific implementations (E60, Q6, Z90, etc.).
-│   ├── payment/              # Zero-Loss Payment Engine, APDU transaction pipelines.
-│   ├── sync/                 # Offline-First Auto Sync Engine & Scheduled Backup Uploader.
-│   ├── location/             # GPS NMEA Atomic Time Extractor & Location Provider.
-│   └── devicemanager/        # Watchdog, Self-Healing, Remote Control, Root OTA.
-└── feature/                  # User-facing features and Compose screens.
-    ├── validator/            # Main validator UI, Splash initialization, payment flows.
-    ├── diagnostic/           # Hardware Self-Test state screens.
-    └── settings/             # Operator & Vendor Configuration UI.
+
+Rules:
+
+- Feature modules can render state and dispatch callbacks, but core modules own logic.
+- `core:payment` can depend on `core:database`, `core:security`, and `core:hardware-api`; UI must not implement payment rules.
+- Vendor SDK classes belong in `core:hardware-drivers` and `core:devicemanager`.
+- `:app` wires dependencies; it should not become a business-logic module.
+
+## Runtime Lifecycle
+
+```mermaid
+sequenceDiagram
+    participant OS as Android OS
+    participant App as BusValidatorApplication
+    participant Perm as RuntimePermissionProvisioner
+    participant Watchdog as AppHealthWatchdog
+    participant Telemetry as TelemetrySyncManager
+    participant Activity as MainActivity
+    participant Init as InitializationPipelineManager
+    participant UI as Compose
+
+    OS->>App: onCreate
+    App->>Perm: ensureProvisioned
+    App->>App: LENZ daemon mode
+    App->>Watchdog: startWatchdog
+    App->>Telemetry: start
+    Telemetry->>Telemetry: start GPS + MQTT reconnect loop
+    OS->>Activity: onCreate
+    Activity->>Perm: ensureProvisioned
+    Activity->>Init: runInitializationPipeline
+    Init-->>UI: Progress
+    Init-->>Activity: Completed(TerminalConfig)
+    Activity-->>UI: Dashboard
 ```
 
-## UI Architecture (Jetpack Compose)
-The UI is strictly based on a **State-Screen architecture** powered by Jetpack Compose.
-- **Zero-Popup Policy:** To ensure absolute stability on non-touchscreen or heavily locked-down devices, there are no floating popups or dialogs. Every state (Success, Failed, Untrusted Time, Out of Service) is rendered as a full-screen or definitive UI state.
-- **Physical Keypad Support:** State machines are tied to physical key events (Up, Down, Enter, Esc), allowing complete navigation without touch input.
-- **MVI Pattern:** The UI layer observes immutable state streams (e.g., `StateFlow`) from ViewModels and dispatches intents/events back.
+## Screen State Ownership
 
-## 24/7 Stability & Memory Optimization
-- **Zero-Memory-Leak Policy:** Strict lifecycle management, particularly for hardware driver callbacks and serial port listeners.
-- **Byte Buffer Pooling:** Network and serial communication utilize object pooling for byte arrays to eliminate garbage collection pauses.
-- **Single-Threaded IO:** Hardware communication happens on dedicated, limited-parallelism coroutine dispatchers (e.g., `Dispatchers.IO.limitedParallelism(1)`) to prevent port conflicts and race conditions.
+`MainActivity` owns current screen as `mutableStateOf(Screen)`:
+
+- `SPLASH`: renders `InteractiveInitializationSplashScreen`.
+- `DASHBOARD`: renders `ValidatorDashboardScreen`.
+- `SETTINGS`: renders `SettingsScreen`.
+- `DIAGNOSTIC`: renders `HardwareDiagnosticScreen`.
+
+`MainActivity` also owns the current `UiTransactionState` for simulator tap flows. A future production card-listening integration should move this orchestration into a ViewModel/use-case boundary so the activity does not grow into a god object.
+
+## Architectural Alternatives Considered
+
+### Single app module
+
+Rejected. It would make vendor SDK, payment, UI, sync, and device-management concerns too coupled.
+
+### Feature modules calling vendor SDK directly
+
+Rejected. This would break multi-vendor support and make UI tests dependent on hardware.
+
+### Full repository/use-case layering for every small class immediately
+
+Deferred. Current app is still foundation-stage. The stronger next step is extracting payment and initialization orchestration out of `MainActivity` into testable ViewModels/use cases once real hardware listeners are wired.
+
+## Current Risk Boundaries
+
+- `MainActivity` is an orchestration hotspot.
+- Secrets and URLs are hard-coded.
+- Some docs/plans may describe intended future behavior; README and current `docs/` files are the source of truth for implemented behavior.

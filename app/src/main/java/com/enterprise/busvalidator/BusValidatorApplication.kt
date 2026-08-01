@@ -2,9 +2,10 @@ package com.enterprise.busvalidator
 
 import android.app.Application
 import com.enterprise.busvalidator.core.devicemanager.AppHealthWatchdog
-import com.enterprise.busvalidator.core.network.MqttTelemetryClient
+import com.enterprise.busvalidator.core.devicemanager.RemoteControlManager
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.enterprise.busvalidator.core.security.RuntimePermissionProvisioner
+import com.enterprise.busvalidator.core.sync.TelemetrySyncManager
 import com.lenz.system.LenzSystemManager
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
@@ -17,9 +18,10 @@ import javax.inject.Inject
 class BusValidatorApplication : Application() {
 
     @Inject lateinit var watchdog: AppHealthWatchdog
-    @Inject lateinit var mqttClient: MqttTelemetryClient
+    @Inject lateinit var remoteControlManager: RemoteControlManager
     @Inject lateinit var logger: EncryptedLogger
     @Inject lateinit var permissionProvisioner: RuntimePermissionProvisioner
+    @Inject lateinit var telemetrySyncManager: TelemetrySyncManager
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -43,7 +45,8 @@ class BusValidatorApplication : Application() {
 
         activateDaemonMode()
         watchdog.startWatchdog(applicationScope)
-        mqttClient.connect()
+        telemetrySyncManager.start(applicationScope)
+        remoteControlManager.listenRemoteCommands(applicationScope)
     }
 
     private fun activateDaemonMode() {
