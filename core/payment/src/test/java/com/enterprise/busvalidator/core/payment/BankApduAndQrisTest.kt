@@ -86,6 +86,7 @@ class BankApduAndQrisTest {
         )
         qrisPaymentEngine = QrisPaymentEngine(logger)
         timeSyncEngine = MultiSourceTimeSyncEngine(logger, SuManager(logger))
+        timeSyncEngine.validateAndUpdateTime(System.currentTimeMillis(), source = "TEST_TRUSTED_TIME")
 
         fakeInsertedTransactions.clear()
         lastSoundPlayed = null

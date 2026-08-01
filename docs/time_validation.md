@@ -2,7 +2,7 @@
 
 ## Problem
 
-Payment timestamps are settlement-critical. A validator can be offline, rebooted, or tampered with, so the app needs confidence that wall-clock time has not jumped backward or drifted beyond tolerance.
+Payment timestamps are settlement-critical. A validator can be offline, rebooted, or tampered with, so the app must not trust `System.currentTimeMillis()` directly.
 
 ## Current Implementation
 
@@ -10,75 +10,70 @@ Current code is in `core/security/MultiSourceTimeSyncEngine.kt`.
 
 Implemented:
 
-- `StateFlow<TimeConfidenceState>`.
-- Initial state `SECURE_SYNCED`.
-- Monotonic guard using `SystemClock.elapsedRealtimeNanos()`.
-- Backward time check against in-memory `lastPersistedTimestampMs`.
-- Drift threshold of 5000 ms.
-- GPS NMEA hook through `onGpsNmeaTimeReceived(rawNmea)`.
-- `$GPRMC` parser for UTC timestamp.
-- Root time correction via `SuManager.setSystemTime()` when skew exceeds 3000 ms and root is available.
-- Manual checkpoint update through `updatePersistedCheckpoint(timestampMs)`.
+- Initial state is `TIME_UNTRUSTED`, not trusted-by-default.
+- Trusted sources:
+  - GPS NMEA `$GPRMC`, `$GNRMC`, and `$GPZDA`.
+  - Android `SystemClock.currentNetworkTimeClock()` on API 33+.
+  - App-level SNTP fallback to `time.android.com` with 5 second timeout.
+- Persisted `TimeAnchorStore` records trusted UTC, `elapsedRealtime`, last known good UTC, source, and uncertainty.
+- Monotonic projection uses `trustedUtc + elapsedRealtime delta` during same-boot offline operation.
+- Backward and forward wall-clock drift beyond 5 seconds marks time untrusted.
+- Persisted checkpoints prevent transaction/audit timestamps from moving backward.
+- Root clock correction is attempted when trusted-source skew exceeds 3 seconds.
+- Continuous validation starts from `BusValidatorApplication`.
+- Card and QRIS payment flows reject when `timeConfidence == TIME_UNTRUSTED`.
 
-Not implemented yet:
+## Offline Rules
 
-- NTP client.
-- NITZ listener.
-- RTC `/dev/rtc0` reader.
-- Persisted checkpoint stored in database/shared storage across process death.
-- Direct integration from `BusLocationManager` NMEA listener into this engine.
-- Payment queue suspension UI driven directly from `timeConfidence` outside payment result state.
+Offline is allowed only when the device has a same-boot trusted anchor.
+
+Allowed:
+
+- GPS/NMEA is available even without internet.
+- Network time was synced earlier in the same boot, then internet drops.
+- The wall clock changes but the persisted anchor plus `elapsedRealtime` can project UTC and root correction succeeds or the drift stays within tolerance.
+
+Blocked:
+
+- Fresh install with no trusted source.
+- App/process starts and no persisted trusted anchor exists.
+- Device rebooted offline and no GPS/NTP/NITZ/RTC trusted source is available.
+- System wall clock moves behind the last transaction checkpoint.
+- System wall clock jumps forward/backward more than 5 seconds from monotonic projection.
+
+After reboot without network, GPS, carrier NITZ, or verified hardware RTC, an app cannot prove real UTC by itself. The safe behavior is `TIME_UNTRUSTED` and transaction rejection until a trusted source is reacquired.
 
 ## State Machine
 
 ```mermaid
 stateDiagram-v2
-    [*] --> SECURE_SYNCED
-    SECURE_SYNCED --> TIME_UNTRUSTED: backward time or drift > 5000 ms
-    MONOTONIC_VALIDATED --> TIME_UNTRUSTED: backward time or drift > 5000 ms
-    TIME_UNTRUSTED --> MONOTONIC_VALIDATED: validateMonotonicVelocity passes after untrusted
-    TIME_UNTRUSTED --> SECURE_SYNCED: validateAndUpdateTime trusted source
-    SECURE_SYNCED --> SECURE_SYNCED: trusted GPS update
+    [*] --> TIME_UNTRUSTED
+    TIME_UNTRUSTED --> SECURE_SYNCED: GPS/API33 network clock/SNTP accepted
+    SECURE_SYNCED --> MONOTONIC_VALIDATED: same-boot offline projection
+    MONOTONIC_VALIDATED --> SECURE_SYNCED: fresh trusted source accepted
+    SECURE_SYNCED --> TIME_UNTRUSTED: reboot boundary, stale anchor, backward checkpoint, or drift > 5000 ms
+    MONOTONIC_VALIDATED --> TIME_UNTRUSTED: reboot boundary, stale anchor, backward checkpoint, or drift > 5000 ms
 ```
 
 ## Payment Gate
 
-`PaymentEngine.processCardApduFlow()` rejects card transactions when:
+`PaymentEngine.processCardApduFlow()` and `PaymentEngine.processQrisTapFlow()` both reject transactions when:
 
 ```kotlin
 timeSyncEngine.timeConfidence.value == TimeConfidenceState.TIME_UNTRUSTED
 ```
 
-The rejection path:
+Transaction timestamps use:
 
-- Logs error.
-- Sets failed LED.
-- Plays failed beep.
-- Returns `TransactionStatus.UNTRUSTED_TIME_REJECTED`.
-
-QRIS flow does not currently perform the same explicit time-confidence check. Add parity if QRIS settlement requires the same timestamp guarantees.
-
-## GPS Integration Gap
-
-`BusLocationManager` currently requests GPS location updates but does not register an NMEA listener. To complete GPS time source:
-
-1. Add Android NMEA listener in `BusLocationManager`.
-2. Pass raw `$GPRMC`/`$GPZDA` sentences to `MultiSourceTimeSyncEngine.onGpsNmeaTimeReceived()`.
-3. Handle runtime permission failure as degraded time confidence.
-4. Add tests for valid/invalid NMEA payloads.
-
-## Production Extension Path
-
-```mermaid
-flowchart TD
-    GPS["GPS NMEA"] --> Aggregator["Time source aggregator"]
-    NTP["NTP/SNTP"] --> Aggregator
-    NITZ["NITZ"] --> Aggregator
-    RTC["Hardware RTC"] --> Aggregator
-    Aggregator --> Engine["MultiSourceTimeSyncEngine"]
-    Engine --> PersistedCheckpoint["Persisted checkpoint"]
-    Engine --> PaymentGate["Payment gate"]
-    Engine --> UI["Out-of-service/time warning UI"]
+```kotlin
+timeSyncEngine.currentValidatedUtcMillis()
 ```
 
-Do not mark time validation production-ready until at least one trusted source and persisted checkpoint survive reboot and are verified on target hardware.
+This keeps audit records from moving behind the persisted checkpoint even when a rejected transaction is recorded during a clock anomaly.
+
+## Remaining Field Verification
+
+- Verify GNSS NMEA delivery on target LENZ firmware while app is HOME/foreground.
+- Verify whether the device image exposes carrier NITZ through Android time detector.
+- Verify whether vendor hardware RTC is accessible and reliable after power loss.
+- Replace hard-coded time-anchor digest pepper before production threat-model acceptance.

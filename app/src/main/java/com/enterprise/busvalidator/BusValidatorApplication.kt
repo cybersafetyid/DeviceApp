@@ -4,6 +4,7 @@ import android.app.Application
 import com.enterprise.busvalidator.core.devicemanager.AppHealthWatchdog
 import com.enterprise.busvalidator.core.devicemanager.RemoteControlManager
 import com.enterprise.busvalidator.core.security.EncryptedLogger
+import com.enterprise.busvalidator.core.security.MultiSourceTimeSyncEngine
 import com.enterprise.busvalidator.core.security.RuntimePermissionProvisioner
 import com.enterprise.busvalidator.core.sync.TelemetrySyncManager
 import com.lenz.system.LenzSystemManager
@@ -22,6 +23,7 @@ class BusValidatorApplication : Application() {
     @Inject lateinit var logger: EncryptedLogger
     @Inject lateinit var permissionProvisioner: RuntimePermissionProvisioner
     @Inject lateinit var telemetrySyncManager: TelemetrySyncManager
+    @Inject lateinit var timeSyncEngine: MultiSourceTimeSyncEngine
 
     private val applicationScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
@@ -45,6 +47,7 @@ class BusValidatorApplication : Application() {
 
         activateDaemonMode()
         watchdog.startWatchdog(applicationScope)
+        timeSyncEngine.startContinuousValidation(applicationScope)
         telemetrySyncManager.start(applicationScope)
         remoteControlManager.listenRemoteCommands(applicationScope)
     }

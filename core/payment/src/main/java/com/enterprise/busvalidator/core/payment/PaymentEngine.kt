@@ -49,7 +49,8 @@ class PaymentEngine @Inject constructor(
         samDriver: SamDriver? = null,
         transmitCardApdu: (ByteArray) -> ByteArray
     ): TransactionRecord = paymentMutex.withLock {
-        val nowMs = System.currentTimeMillis()
+        timeSyncEngine.validateMonotonicVelocity()
+        val nowMs = timeSyncEngine.currentValidatedUtcMillis()
 
         // Guard 1: Time Confidence Transaction Gate
         if (timeSyncEngine.timeConfidence.value == TimeConfidenceState.TIME_UNTRUSTED) {
@@ -133,7 +134,28 @@ class PaymentEngine @Inject constructor(
         tapMode: TapMode = TapMode.TAP_IN_OUT,
         fareRulePolicy: FareRulePolicy? = null
     ): TransactionRecord = paymentMutex.withLock {
-        val nowMs = System.currentTimeMillis()
+        timeSyncEngine.validateMonotonicVelocity()
+        val nowMs = timeSyncEngine.currentValidatedUtcMillis()
+
+        if (timeSyncEngine.timeConfidence.value == TimeConfidenceState.TIME_UNTRUSTED) {
+            logger.log("PaymentEngine", "QRIS TRANSACTION REJECTED: Untrusted System Time!", isError = true)
+            ledDriver.setLedFailed()
+            audioDriver.playSound(SoundType.FAILED_BEEP)
+            return@withLock buildRecord(
+                cardUid = "QRIS-UNKNOWN",
+                bankIssuer = BankIssuer.QRIS_TAP.name,
+                transCode = "",
+                txCounter = 0,
+                deducted = 0,
+                initialBal = 0,
+                finalBal = 0,
+                timestamp = nowMs,
+                tapMode = tapMode,
+                profile = passengerProfile,
+                status = TransactionStatus.UNTRUSTED_TIME_REJECTED
+            )
+        }
+
         val fare = calculateDynamicFare("QRIS", passengerProfile, fareRulePolicy)
 
         val qrisData = qrisPaymentEngine.processQrisTapPayload(qrPayload, fareAmount = fare)

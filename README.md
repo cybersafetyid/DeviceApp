@@ -18,7 +18,7 @@ README ini adalah pintu masuk developer. Gunakan dokumen di `docs/` untuk detail
 | QRIS | Ada. Generate/process payload QRIS, CRC16-CCITT validation, RRN-like transCode, commit DB lewat `PaymentEngine`. | `core/payment/qris/` |
 | Sync | Ada. Transaction sync masih manual/simulasi, tetapi GPS telemetry sudah otomatis: persist location log, publish MQTT, API fallback, drain ulang pending log, dan prune 7 hari. | `core/sync/` |
 | Network | Ada. Ktor client untuk terminal config dan API fallback telemetry, Paho MQTT dengan reconnect loop, QoS 1 location publish, payment response flow, remote command flow. | `core/network/` |
-| Time validation | Ada sebagian. Monotonic drift guard, GPS NMEA listener terhubung ke parser, root time correction. Belum ada NTP/NITZ/RTC source aktif. | `core/security/MultiSourceTimeSyncEngine.kt`, `core/location/` |
+| Time validation | Ada. Default untrusted sampai ada trusted source; persisted monotonic anchor, GPS NMEA, Android network clock API 33+, SNTP fallback, root correction, QRIS/card gate, dan continuous validation. Reboot offline tanpa source tepercaya tetap diblokir. | `core/security/MultiSourceTimeSyncEngine.kt`, `core/location/` |
 | HAL | Ada kontrak dan factory. E60Q/E60V2 adapter tersedia, generic default driver tersedia, Q6/Z90/A90/Telpo/MSI masih fallback/gap. | `core/hardware-api/`, `core/hardware-drivers/` |
 | Device management | Ada. Watchdog memory pressure, initialization pipeline, remote commands, LENZ system manager wrapper. | `core/devicemanager/` |
 | Security/storage | Ada encrypted logger, SQLCipher DB, encrypted backup helper, decryptor utility. Key/passphrase saat ini hard-coded dan harus diganti sebelum produksi. | `core/security/`, `core/database/` |
@@ -444,7 +444,7 @@ These are intentionally documented so the next developer does not over-claim rea
 - SQLCipher passphrase and AES log/backup key are hard-coded. Move to Android Keystore, hardware keystore, injected secure provisioning, or vendor secure element flow.
 - `SyncManager` currently simulates successful upload by marking records synced; implement real endpoint, server ACK, retries, and conflict handling.
 - `InitializationPipelineManager` currently creates terminal config locally from operator presets; integrate real parameter fetch and validation.
-- `MultiSourceTimeSyncEngine` does not yet implement NTP/NITZ/RTC sources despite the intended design.
+- Time validation still needs target-device verification for vendor RTC/NITZ behavior; app-level SNTP/GPS/monotonic anchor is implemented.
 - Generic hardware drivers return successful no-op behavior; do not use those for field acceptance.
 - Q6/Z90/A90/Telpo/MSI enum values exist, but concrete drivers are not implemented.
 - Payment APDU handlers need real device/card/SAM validation and bank certification before production settlement.
