@@ -8,6 +8,7 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.*
 import androidx.compose.runtime.*
 import androidx.compose.ui.Alignment
+import androidx.hilt.navigation.compose.hiltViewModel
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
@@ -22,26 +23,12 @@ data class DiagnosticItem(
 
 @Composable
 fun HardwareDiagnosticScreen(
-    onRunDiagnostic: () -> Unit,
-    onBackClick: () -> Unit
+    onRunDiagnostic: () -> Unit = {},
+    onBackClick: () -> Unit,
+    viewModel: HardwareDiagnosticViewModel = hiltViewModel()
 ) {
-    var statusMessage by remember { mutableStateOf<String?>(null) }
-
-    val diagnosticResults = remember {
-        listOf(
-            DiagnosticItem("NFC Antenna Reader", true, "ISO 14443-4 APDU OK"),
-            DiagnosticItem("SAM Module Slot 1", true, "ATR Answer To Reset Valid"),
-            DiagnosticItem("RS232 Serial Port", true, "/dev/ttyS1 115200 Baud OK"),
-            DiagnosticItem("Barcode / QR Scanner", true, "Frame Reader Engine OK"),
-            DiagnosticItem("Audio Synthesizer", true, "SoundPool Audio Speaker OK"),
-            DiagnosticItem("Onboard Board LED", true, "Green/Red/Blue Drivers OK"),
-            DiagnosticItem("GPS Location Module", true, "3D Fix | 11 Satellites Lock"),
-            DiagnosticItem("MQTT TLS Telemetry", true, "Ping RTT 45ms"),
-            DiagnosticItem("Encrypted SQLCipher DB", true, "AES-256 Storage I/O OK"),
-            DiagnosticItem("AES-256 Encrypted Log Engine", true, "Log Decryption Tool Compatible"),
-            DiagnosticItem("Encrypted DB Backup Tool", true, "Database Backup Engine Ready")
-        )
-    }
+    val statusMessage by viewModel.statusMessage.collectAsState()
+    val diagnosticResults by viewModel.diagnosticResults.collectAsState()
 
     Column(
         modifier = Modifier
@@ -121,7 +108,7 @@ fun HardwareDiagnosticScreen(
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp), modifier = Modifier.fillMaxWidth()) {
             Button(
                 onClick = {
-                    statusMessage = "Backup Terenkripsi Dibuat & Decrypt Test OK via tools/decrypt_logs_and_db.py"
+                    viewModel.setStatusMessage("Backup Terenkripsi Dibuat & Decrypt Test OK via tools/decrypt_logs_and_db.py")
                 },
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF059669))
@@ -130,7 +117,7 @@ fun HardwareDiagnosticScreen(
             }
 
             Button(
-                onClick = onRunDiagnostic,
+                onClick = { viewModel.runDiagnostics() },
                 modifier = Modifier.weight(1f),
                 colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF2563EB))
             ) {

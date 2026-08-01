@@ -38,6 +38,9 @@ dependencies {
     implementation(libs.androidx.ui)
     implementation(libs.androidx.material3)
 
+    implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.4")
+    implementation("androidx.hilt:hilt-navigation-compose:1.2.0")
+
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)
 }

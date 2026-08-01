@@ -30,6 +30,11 @@ dependencies {
     implementation(project(":core:network"))
     implementation(project(":core:hardware-api"))
 
+    // Vendor SDK compileOnly dependencies
+    compileOnly(files("../../libs/vendor-sdk/e60/E60Q/E60QSDK-release.aar"))
+    compileOnly(files("../../libs/vendor-sdk/e60/E60Q/jtbqrcodesdk-release.aar"))
+    compileOnly(files("../../libs/vendor-sdk/e60/E60V2/E60V2SDK-release.aar"))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.hilt.android)
     ksp(libs.hilt.compiler)

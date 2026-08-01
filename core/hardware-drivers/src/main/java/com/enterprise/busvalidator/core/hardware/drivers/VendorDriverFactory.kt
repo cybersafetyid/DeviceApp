@@ -42,7 +42,8 @@ class VendorDriverFactory @Inject constructor(
     private val detector: DeviceModelDetector,
     private val logger: EncryptedLogger,
     private val e60qAdapter: E60QDriverAdapter,
-    private val e60v2Adapter: E60V2DriverAdapter
+    private val e60v2Adapter: E60V2DriverAdapter,
+    private val e60SerialAdapter: E60SerialAdapter
 ) {
     private var activeModel: VendorDeviceModel = VendorDeviceModel.AUTO
 
@@ -71,7 +72,13 @@ class VendorDriverFactory @Inject constructor(
         }
     }
 
-    fun createSerialDriver(): SerialDriver = DefaultSerialDriver(logger)
+    fun createSerialDriver(): SerialDriver {
+        return when (getActiveDeviceModel()) {
+            VendorDeviceModel.E60Q -> e60SerialAdapter
+            VendorDeviceModel.E60V2 -> e60SerialAdapter
+            else -> DefaultSerialDriver(logger)
+        }
+    }
 
     fun createScannerDriver(): ScannerDriver {
         return when (getActiveDeviceModel()) {

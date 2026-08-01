@@ -74,6 +74,11 @@ dependencies {
     implementation(project(":feature:diagnostic"))
     implementation(project(":feature:settings"))
 
+    // Vendor SDK compileOnly dependencies
+    compileOnly(files("../libs/vendor-sdk/e60/E60Q/E60QSDK-release.aar"))
+    compileOnly(files("../libs/vendor-sdk/e60/E60Q/jtbqrcodesdk-release.aar"))
+    compileOnly(files("../libs/vendor-sdk/e60/E60V2/E60V2SDK-release.aar"))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.androidx.lifecycle.runtime.ktx)
     implementation(libs.androidx.activity.compose)

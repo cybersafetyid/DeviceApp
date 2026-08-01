@@ -4,6 +4,8 @@ import android.app.Application
 import com.enterprise.busvalidator.core.devicemanager.AppHealthWatchdog
 import com.enterprise.busvalidator.core.network.MqttTelemetryClient
 import com.enterprise.busvalidator.core.security.EncryptedLogger
+import com.enterprise.busvalidator.core.devicemanager.LenzDeviceManager
+import com.lenz.system.LenzSystemManager
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -22,6 +24,14 @@ class BusValidatorApplication : Application() {
     override fun onCreate() {
         super.onCreate()
         logger.log("Application", "Bus Validator Enterprise System Starting...")
+        
+        try {
+            LenzSystemManager.Default().startDaemonApp(packageName)
+            logger.log("Application", "Daemon Mode Activated for $packageName")
+        } catch (e: Exception) {
+            logger.log("Application", "Failed to start Daemon Mode: ${e.message}", isError = true)
+        }
+
         watchdog.startWatchdog(applicationScope)
         mqttClient.connect()
     }
