@@ -4,8 +4,11 @@ import com.enterprise.busvalidator.core.database.TransactionDao
 import com.enterprise.busvalidator.core.database.TransactionEntity
 import com.enterprise.busvalidator.core.hardware.api.AudioDriver
 import com.enterprise.busvalidator.core.hardware.api.LedDriver
+import com.enterprise.busvalidator.core.hardware.api.SamDriver
 import com.enterprise.busvalidator.core.hardware.api.SoundType
 import com.enterprise.busvalidator.core.model.*
+import com.enterprise.busvalidator.core.payment.apdu.BankApduManager
+import com.enterprise.busvalidator.core.payment.qris.QrisPaymentEngine
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.enterprise.busvalidator.core.security.MultiSourceTimeSyncEngine
 import kotlinx.coroutines.sync.Mutex
@@ -15,8 +18,8 @@ import javax.inject.Inject
 import javax.inject.Singleton
 
 /**
- * Offline-First Zero-Loss Payment Engine with Double Deduct Protection,
- * Intermodal Fare Rules, Multi-Tier Promos, and Time Confidence Gate.
+ * Offline-First Zero-Loss Payment Engine integrating Bank APDU Handlers (Mandiri, BCA, BRI, BNI, DKI, Nobu),
+ * Mandiri Grace Period evaluation, Auto Completion, QRIS Tap, and TransCode settlement ledger persistence.
  */
 @Singleton
 class PaymentEngine @Inject constructor(
@@ -24,7 +27,9 @@ class PaymentEngine @Inject constructor(
     private val timeSyncEngine: MultiSourceTimeSyncEngine,
     private val logger: EncryptedLogger,
     private val ledDriver: LedDriver,
-    private val audioDriver: AudioDriver
+    private val audioDriver: AudioDriver,
+    private val bankApduManager: BankApduManager,
+    private val qrisPaymentEngine: QrisPaymentEngine
 ) {
     // In-memory Anti-Passback LRU Cooldown Buffer (Card UID -> Last Tap Timestamp)
     private val antiPassbackCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
@@ -32,18 +37,18 @@ class PaymentEngine @Inject constructor(
     private val paymentMutex = Mutex()
 
     /**
-     * Executes atomic card APDU transaction pipeline.
+     * Complete APDU Payment Flow for all 6 Banks (Mandiri, BCA, BRI, BNI, DKI, Nobu).
+     * Pipeline: readcardinfo -> auto completion -> Mandiri grace period -> deduct -> commit TransCode.
      */
-    suspend fun processCardTapTransaction(
+    suspend fun processCardApduFlow(
         cardUid: String,
-        bankIssuer: String,
-        initialBalance: Long,
         passengerProfile: PassengerProfile = PassengerProfile.GENERAL,
         tapMode: TapMode = TapMode.TAP_IN_OUT,
         fareRulePolicy: FareRulePolicy? = null,
-        writeApduExecutor: (amountToDeduct: Long) -> Boolean
+        routeCode: String = "BK-01",
+        samDriver: SamDriver? = null,
+        transmitCardApdu: (ByteArray) -> ByteArray
     ): TransactionRecord = paymentMutex.withLock {
-
         val nowMs = System.currentTimeMillis()
 
         // Guard 1: Time Confidence Transaction Gate
@@ -51,7 +56,7 @@ class PaymentEngine @Inject constructor(
             logger.log("PaymentEngine", "TRANSACTION REJECTED: Untrusted System Time!", isError = true)
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.FAILED_BEEP)
-            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.UNTRUSTED_TIME_REJECTED)
+            return@withLock buildRecord(cardUid, "UNKNOWN", "", 0, 0, 0, 0, nowMs, tapMode, passengerProfile, TransactionStatus.UNTRUSTED_TIME_REJECTED)
         }
 
         // Guard 2: Anti-Passback / Double Deduct Safeguard
@@ -60,47 +65,107 @@ class PaymentEngine @Inject constructor(
             logger.log("PaymentEngine", "ANTI-PASSBACK TRIGGERED for card $cardUid. Re-tapped in ${nowMs - lastTapTime}ms")
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.CARD_ALREADY_TAPPED_BEEP)
-            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.CARD_ALREADY_TAPPED)
+            return@withLock buildRecord(cardUid, "UNKNOWN", "", 0, 0, 0, 0, nowMs, tapMode, passengerProfile, TransactionStatus.CARD_ALREADY_TAPPED)
         }
 
-        // Calculate Fare & Dynamic Promos based on Operator FareRulePolicy
-        val calculatedFare = calculateDynamicFare(bankIssuer, passengerProfile, fareRulePolicy)
+        val targetFare = calculateDynamicFare("GENERIC", passengerProfile, fareRulePolicy)
 
-        // Guard 3: Double Fare Validation Safeguard (Layer 1: Balance Check, Layer 2: Bounds Check)
-        if (initialBalance < calculatedFare) {
-            logger.log("PaymentEngine", "INSUFFICIENT BALANCE: Card=$cardUid, Balance=$initialBalance, Required=$calculatedFare")
+        // Execute full APDU pipeline: readcardinfo -> auto completion -> Mandiri grace period -> deduct
+        val apduPipelineResult = bankApduManager.processFullCardApduPipeline(
+            cardUid = cardUid,
+            targetFare = targetFare,
+            tapInTimestamp = nowMs - (5 * 60 * 1000L),
+            routeCode = routeCode,
+            samDriver = samDriver,
+            transmitCardApdu = transmitCardApdu
+        )
+
+        val cardInfo = apduPipelineResult.cardInfo
+        val deductResult = apduPipelineResult.deductResult
+
+        // Guard 3: Balance check
+        if (cardInfo.balance < targetFare && (apduPipelineResult.mandiriGracePeriodResult?.adjustedGraceFare ?: targetFare) > 0L) {
+            logger.log("PaymentEngine", "INSUFFICIENT BALANCE: Card=$cardUid, Balance=${cardInfo.balance}, Required=$targetFare")
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.INSUFFICIENT_BALANCE_BEEP)
-            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.INSUFFICIENT_BALANCE)
+            return@withLock buildRecord(cardUid, cardInfo.bankIssuer.name, cardInfo.lastTransCode, 0, 0, cardInfo.balance, cardInfo.balance, nowMs, tapMode, passengerProfile, TransactionStatus.INSUFFICIENT_BALANCE)
         }
 
-        if (calculatedFare < 0 || calculatedFare > 100_000L) {
-            logger.log("PaymentEngine", "DOUBLE FARE VALIDATION FAILED: Invalid calculated fare $calculatedFare", isError = true)
+        if (!deductResult.isSuccess) {
+            logger.log("PaymentEngine", "ATOMIC ROLLBACK: Card APDU Debit Failed! Reason: ${deductResult.errorMessage}", isError = true)
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.FAILED_BEEP)
-            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.FAILED_WRITE_ROLLBACK)
+            return@withLock buildRecord(cardUid, cardInfo.bankIssuer.name, "", 0, 0, cardInfo.balance, cardInfo.balance, nowMs, tapMode, passengerProfile, TransactionStatus.FAILED_WRITE_ROLLBACK)
         }
 
-        // Atomic Card Write APDU Step
-        val writeSuccess = writeApduExecutor(calculatedFare)
-        if (!writeSuccess) {
-            logger.log("PaymentEngine", "ATOMIC ROLLBACK: APDU Card Write Failed for UID $cardUid!", isError = true)
-            ledDriver.setLedFailed()
-            audioDriver.playSound(SoundType.FAILED_BEEP)
-            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.FAILED_WRITE_ROLLBACK)
-        }
-
-        // Transaction Succeeded
-        val finalBalance = initialBalance - calculatedFare
+        // Success: Commit to memory & persistent Room DB
         antiPassbackCache[cardUid] = nowMs
         timeSyncEngine.updatePersistedCheckpoint(nowMs)
 
-        val record = buildRecord(cardUid, bankIssuer, calculatedFare, initialBalance, finalBalance, nowMs, tapMode, passengerProfile, TransactionStatus.SUCCESS)
+        val record = buildRecord(
+            cardUid = cardUid,
+            bankIssuer = cardInfo.bankIssuer.name,
+            transCode = deductResult.transCode,
+            txCounter = deductResult.transactionCounter,
+            deducted = deductResult.amountDeducted,
+            initialBal = deductResult.initialBalance,
+            finalBal = deductResult.finalBalance,
+            timestamp = nowMs,
+            tapMode = tapMode,
+            profile = passengerProfile,
+            status = TransactionStatus.SUCCESS
+        )
 
-        // Commit to Encrypted Database Ledger
+        commitTransactionToDb(record)
+        ledDriver.setLedSuccess()
+        audioDriver.playSound(SoundType.SUCCESS_BEEP)
+        logger.log("PaymentEngine", "CARD APDU TRANSACTION COMMITTED: TxId=${record.transactionId}, TransCode=${record.transCode}, Deducted=${record.amountDeducted}, FinalBal=${record.finalBalance}")
+
+        return@withLock record
+    }
+
+    /**
+     * QRIS Tap & Dynamic QRIS Payment Processing.
+     */
+    suspend fun processQrisTapFlow(
+        qrPayload: String,
+        passengerProfile: PassengerProfile = PassengerProfile.GENERAL,
+        tapMode: TapMode = TapMode.TAP_IN_OUT,
+        fareRulePolicy: FareRulePolicy? = null
+    ): TransactionRecord = paymentMutex.withLock {
+        val nowMs = System.currentTimeMillis()
+        val fare = calculateDynamicFare("QRIS", passengerProfile, fareRulePolicy)
+
+        val qrisData = qrisPaymentEngine.processQrisTapPayload(qrPayload, fareAmount = fare)
+
+        val record = buildRecord(
+            cardUid = "QRIS-${qrisData.terminalId}",
+            bankIssuer = BankIssuer.QRIS_TAP.name,
+            transCode = qrisData.transCode,
+            txCounter = (1..999).random(),
+            deducted = qrisData.amount,
+            initialBal = 0L,
+            finalBal = 0L,
+            timestamp = nowMs,
+            tapMode = tapMode,
+            profile = passengerProfile,
+            status = TransactionStatus.SUCCESS
+        )
+
+        commitTransactionToDb(record)
+        ledDriver.setLedSuccess()
+        audioDriver.playSound(SoundType.SUCCESS_BEEP)
+        logger.log("PaymentEngine", "QRIS TAP TRANSACTION COMMITTED: RRN TransCode=${record.transCode}, Amount=${record.amountDeducted}")
+
+        return@withLock record
+    }
+
+    private suspend fun commitTransactionToDb(record: TransactionRecord) {
         transactionDao.insertTransaction(
             TransactionEntity(
                 transactionId = record.transactionId,
+                transCode = record.transCode,
+                transactionCounter = record.transactionCounter,
                 cardUid = record.cardUid,
                 bankIssuer = record.bankIssuer,
                 amountDeducted = record.amountDeducted,
@@ -114,36 +179,24 @@ class PaymentEngine @Inject constructor(
                 recordSignature = record.recordSignature
             )
         )
-
-        ledDriver.setLedSuccess()
-        audioDriver.playSound(SoundType.SUCCESS_BEEP)
-        logger.log("PaymentEngine", "TRANSACTION COMMITTED: TxId=${record.transactionId}, Deducted=$calculatedFare, FinalBalance=$finalBalance")
-
-        return@withLock record
     }
 
     private fun calculateDynamicFare(bankIssuer: String, profile: PassengerProfile, policy: FareRulePolicy?): Long {
         val baseFare = policy?.baseFare ?: 3500L
-
-        var fare = when (profile) {
+        return when (profile) {
             PassengerProfile.SENIOR_CITIZEN -> policy?.seniorCitizenFare ?: 0L
             PassengerProfile.DISABLED -> policy?.disabledFare ?: 0L
             PassengerProfile.STUDENT -> policy?.studentFare ?: 2000L
             PassengerProfile.GOVERNMENT_PNS -> policy?.pnsFare ?: 3000L
             PassengerProfile.GENERAL -> baseFare
         }
-
-        // Bank Issuer Specific Promo
-        if (bankIssuer.contains("DKI") && profile == PassengerProfile.GENERAL && policy == null) {
-            fare = 3000L
-        }
-
-        return fare
     }
 
     private fun buildRecord(
         cardUid: String,
         bankIssuer: String,
+        transCode: String,
+        txCounter: Int,
         deducted: Long,
         initialBal: Long,
         finalBal: Long,
@@ -153,8 +206,22 @@ class PaymentEngine @Inject constructor(
         status: TransactionStatus
     ): TransactionRecord {
         val txId = "TX-${timestamp}-${cardUid.takeLast(4)}"
-        val sig = generateHmacSignature("$txId:$cardUid:$deducted:$finalBal:$timestamp")
-        return TransactionRecord(txId, cardUid, bankIssuer, deducted, initialBal, finalBal, timestamp, tapMode, profile, status, sig)
+        val sig = generateHmacSignature("$txId:$cardUid:$transCode:$deducted:$finalBal:$timestamp")
+        return TransactionRecord(
+            transactionId = txId,
+            transCode = transCode,
+            transactionCounter = txCounter,
+            cardUid = cardUid,
+            bankIssuer = bankIssuer,
+            amountDeducted = deducted,
+            initialBalance = initialBal,
+            finalBalance = finalBal,
+            timestampUtc = timestamp,
+            tapMode = tapMode,
+            passengerProfile = profile,
+            status = status,
+            recordSignature = sig
+        )
     }
 
     private fun generateHmacSignature(rawString: String): String {

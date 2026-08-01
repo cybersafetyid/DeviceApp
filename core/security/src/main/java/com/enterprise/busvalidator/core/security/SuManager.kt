@@ -9,10 +9,10 @@ import javax.inject.Singleton
  * Handles system reboot, RTC time adjustment, port permission elevation, and silent OTA installs.
  */
 @Singleton
-class SuManager @Inject constructor(
+open class SuManager @Inject constructor(
     private val logger: EncryptedLogger
 ) {
-    fun isRootAvailable(): Boolean {
+    open fun isRootAvailable(): Boolean {
         return try {
             val process = Runtime.getRuntime().exec("su -c id")
             val exitCode = process.waitFor()

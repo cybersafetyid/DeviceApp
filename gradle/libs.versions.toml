@@ -64,6 +64,12 @@ camerax-view = { group = "androidx.camera", name = "camera-view", version.ref = 
 mlkit-barcode-scanning = { group = "com.google.mlkit", name = "barcode-scanning", version.ref = "mlkit" }
 zxing-core = { group = "com.google.zxing", name = "core", version.ref = "zxing" }
 
+# Testing
+junit = { group = "junit", name = "junit", version = "4.13.2" }
+mockito-core = { group = "org.mockito", name = "mockito-core", version = "5.11.0" }
+mockito-kotlin = { group = "org.mockito.kotlin", name = "mockito-kotlin", version = "5.2.1" }
+kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-coroutines-test", version.ref = "coroutines" }
+
 # Firebase
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }

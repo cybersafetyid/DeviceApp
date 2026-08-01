@@ -245,8 +245,96 @@ enum class PassengerProfile {
     DISABLED
 }
 
+enum class BankIssuer(val code: String, val displayName: String, val defaultAid: String) {
+    MANDIRI_EMONEY("MANDIRI", "Mandiri e-Money", "F000000001"),
+    BCA_FLAZZ("BCA", "BCA Flazz", "A0000000041010"),
+    BRI_BRIZZI("BRI", "BRI Brizzi", "D360000001"),
+    BNI_TAPCASH("BNI", "BNI TapCash", "D360000002"),
+    BANK_DKI_JAKCARD("DKI", "Bank DKI JakCard", "D360000003"),
+    NOBU_EMONEY("NOBU", "Bank Nobu E-Money", "D360000004"),
+    KMT_FELICA("KMT", "KCI Kartu Multi Trip (FeliCa)", "FE00"),
+    QRIS_TAP("QRIS", "QRIS Tap / Dynamic QR", "000201"),
+    UNKNOWN("UNKNOWN", "Unknown Card Issuer", "")
+}
+
+enum class UncompletedTxState {
+    CLOSED,
+    OPEN_TAP_IN,
+    PENALTY_REQUIRED
+}
+
+data class MandiriGracePeriodInfo(
+    val isGracePeriodActive: Boolean = false,
+    val tapInTimestamp: Long = 0L,
+    val graceWindowMinutes: Int = 15,
+    val isEligibleForGraceDiscount: Boolean = false,
+    val graceFare: Long = 0L
+)
+
+data class BankCardInfo(
+    val cardUid: String,
+    val bankIssuer: BankIssuer,
+    val cardNumberFormatted: String,
+    val balance: Long,
+    val uncompletedTxState: UncompletedTxState = UncompletedTxState.CLOSED,
+    val lastTransactionTimestamp: Long = 0L,
+    val lastTransCode: String = "",
+    val mandiriGracePeriodInfo: MandiriGracePeriodInfo? = null,
+    val rawApplicationData: ByteArray = byteArrayOf()
+)
+
+data class ApduDeductResult(
+    val isSuccess: Boolean,
+    val transCode: String,
+    val transactionCounter: Int,
+    val amountDeducted: Long,
+    val initialBalance: Long,
+    val finalBalance: Long,
+    val statusWordHex: String = "9000",
+    val samAuthSignature: String = "",
+    val errorMessage: String? = null
+)
+
+enum class AutoCompletionStatus {
+    SUCCESS,
+    NOT_NEEDED,
+    FAILED
+}
+
+data class AutoCompletionResult(
+    val wasApplied: Boolean,
+    val openJourneyId: String = "",
+    val penaltyOrFlatFare: Long = 0L,
+    val balanceAfterCompletion: Long = 0L,
+    val autoCompletionTransCode: String = "",
+    val transactionCounter: Int = 0,
+    val updatedTxState: UncompletedTxState = UncompletedTxState.CLOSED,
+    val status: AutoCompletionStatus = AutoCompletionStatus.NOT_NEEDED
+)
+
+data class MandiriGracePeriodResult(
+    val isGracePeriodActive: Boolean,
+    val originalFare: Long,
+    val adjustedGraceFare: Long,
+    val graceDiscountAmount: Long,
+    val explanation: String
+)
+
+data class QrisTapData(
+    val qrisPayload: String,
+    val merchantName: String,
+    val merchantId: String,
+    val terminalId: String,
+    val transactionId: String,
+    val transCode: String,
+    val amount: Long,
+    val crcVerified: Boolean
+)
+
 data class TransactionRecord(
     val transactionId: String,
+    val transCode: String,
+    val transactionCounter: Int,
     val cardUid: String,
     val bankIssuer: String,
     val amountDeducted: Long,
@@ -265,7 +353,8 @@ enum class TransactionStatus {
     INSUFFICIENT_BALANCE,
     FAILED_WRITE_ROLLBACK,
     UNTRUSTED_TIME_REJECTED,
-    CARD_READ_ERROR
+    CARD_READ_ERROR,
+    AUTO_COMPLETION_FAILED
 }
 
 data class TelemetryStatus(

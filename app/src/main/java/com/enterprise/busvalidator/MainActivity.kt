@@ -128,13 +128,18 @@ class MainActivity : ComponentActivity() {
             val dummyUid = "A1B2C3D4"
             uiTxState.value = UiTransactionState.Processing(dummyUid)
 
-            val record = paymentEngine.processCardTapTransaction(
-                cardUid = dummyUid,
-                bankIssuer = bankIssuer,
-                initialBalance = 50_000L,
-                fareRulePolicy = terminalConfig?.operatorConfig?.fareRulePolicy,
-                writeApduExecutor = { true }
-            )
+            val record = if (bankIssuer.contains("QRIS")) {
+                paymentEngine.processQrisTapFlow(
+                    qrPayload = "00020101021226670016ID.GO.QRIS.WWW540440005802ID5914BISKITA BEKASI63041D9C",
+                    fareRulePolicy = terminalConfig?.operatorConfig?.fareRulePolicy
+                )
+            } else {
+                paymentEngine.processCardApduFlow(
+                    cardUid = dummyUid,
+                    fareRulePolicy = terminalConfig?.operatorConfig?.fareRulePolicy,
+                    transmitCardApdu = { byteArrayOf(0x90.toByte(), 0x00.toByte()) }
+                )
+            }
 
             uiTxState.value = when (record.status) {
                 TransactionStatus.SUCCESS -> UiTransactionState.Success(record)

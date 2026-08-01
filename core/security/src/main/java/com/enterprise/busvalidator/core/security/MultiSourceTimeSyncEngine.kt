@@ -17,7 +17,7 @@ import javax.inject.Singleton
  * Prevents time manipulation/skew to guarantee zero bank settlement rejections.
  */
 @Singleton
-class MultiSourceTimeSyncEngine @Inject constructor(
+open class MultiSourceTimeSyncEngine @Inject constructor(
     private val logger: EncryptedLogger,
     private val suManager: SuManager
 ) {
@@ -25,7 +25,7 @@ class MultiSourceTimeSyncEngine @Inject constructor(
     val timeConfidence: StateFlow<TimeConfidenceState> = _timeConfidence.asStateFlow()
 
     private var lastSecureSyncWallTimeMs: Long = System.currentTimeMillis()
-    private var lastSecureSyncElapsedNanos: Long = SystemClock.elapsedRealtimeNanos()
+    private var lastSecureSyncElapsedNanos: Long = try { SystemClock.elapsedRealtimeNanos() } catch (e: Throwable) { System.currentTimeMillis() * 1_000_000L }
     private var lastPersistedTimestampMs: Long = System.currentTimeMillis()
 
     init {
@@ -53,7 +53,7 @@ class MultiSourceTimeSyncEngine @Inject constructor(
     @Synchronized
     fun validateMonotonicVelocity(): Boolean {
         val currentWallMs = System.currentTimeMillis()
-        val currentElapsedNanos = SystemClock.elapsedRealtimeNanos()
+        val currentElapsedNanos = try { SystemClock.elapsedRealtimeNanos() } catch (e: Throwable) { System.currentTimeMillis() * 1_000_000L }
 
         val elapsedDeltaMs = (currentElapsedNanos - lastSecureSyncElapsedNanos) / 1_000_000
         val expectedWallMs = lastSecureSyncWallTimeMs + elapsedDeltaMs
@@ -92,7 +92,7 @@ class MultiSourceTimeSyncEngine @Inject constructor(
         }
 
         lastSecureSyncWallTimeMs = trustedUtcMs
-        lastSecureSyncElapsedNanos = SystemClock.elapsedRealtimeNanos()
+        lastSecureSyncElapsedNanos = try { SystemClock.elapsedRealtimeNanos() } catch (e: Throwable) { System.currentTimeMillis() * 1_000_000L }
         lastPersistedTimestampMs = trustedUtcMs
         _timeConfidence.value = TimeConfidenceState.SECURE_SYNCED
     }

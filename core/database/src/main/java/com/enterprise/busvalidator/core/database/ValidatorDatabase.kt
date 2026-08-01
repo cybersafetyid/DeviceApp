@@ -6,6 +6,8 @@ import kotlinx.coroutines.flow.Flow
 @Entity(tableName = "transactions")
 data class TransactionEntity(
     @PrimaryKey val transactionId: String,
+    val transCode: String = "",
+    val transactionCounter: Int = 0,
     val cardUid: String,
     val bankIssuer: String,
     val amountDeducted: Long,
