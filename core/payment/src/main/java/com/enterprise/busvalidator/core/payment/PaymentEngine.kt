@@ -8,6 +8,8 @@ import com.enterprise.busvalidator.core.hardware.api.SoundType
 import com.enterprise.busvalidator.core.model.*
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.enterprise.busvalidator.core.security.MultiSourceTimeSyncEngine
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.security.MessageDigest
 import javax.inject.Inject
 import javax.inject.Singleton
@@ -27,11 +29,11 @@ class PaymentEngine @Inject constructor(
     // In-memory Anti-Passback LRU Cooldown Buffer (Card UID -> Last Tap Timestamp)
     private val antiPassbackCache = java.util.concurrent.ConcurrentHashMap<String, Long>()
     private val cooldownWindowMs = 10_000L // 10-second cooldown per card UID
+    private val paymentMutex = Mutex()
 
     /**
      * Executes atomic card APDU transaction pipeline.
      */
-    @Synchronized
     suspend fun processCardTapTransaction(
         cardUid: String,
         bankIssuer: String,
@@ -39,7 +41,7 @@ class PaymentEngine @Inject constructor(
         passengerProfile: PassengerProfile = PassengerProfile.GENERAL,
         tapMode: TapMode = TapMode.TAP_IN_OUT,
         writeApduExecutor: (amountToDeduct: Long) -> Boolean
-    ): TransactionRecord {
+    ): TransactionRecord = paymentMutex.withLock {
 
         val nowMs = System.currentTimeMillis()
 
@@ -48,7 +50,7 @@ class PaymentEngine @Inject constructor(
             logger.log("PaymentEngine", "TRANSACTION REJECTED: Untrusted System Time!", isError = true)
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.FAILED_BEEP)
-            return buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.UNTRUSTED_TIME_REJECTED)
+            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.UNTRUSTED_TIME_REJECTED)
         }
 
         // Guard 2: Anti-Passback / Double Deduct Safeguard
@@ -57,7 +59,7 @@ class PaymentEngine @Inject constructor(
             logger.log("PaymentEngine", "ANTI-PASSBACK TRIGGERED for card $cardUid. Re-tapped in ${nowMs - lastTapTime}ms")
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.CARD_ALREADY_TAPPED_BEEP)
-            return buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.CARD_ALREADY_TAPPED)
+            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.CARD_ALREADY_TAPPED)
         }
 
         // Calculate Fare & Dynamic Promos
@@ -68,14 +70,14 @@ class PaymentEngine @Inject constructor(
             logger.log("PaymentEngine", "INSUFFICIENT BALANCE: Card=$cardUid, Balance=$initialBalance, Required=$calculatedFare")
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.INSUFFICIENT_BALANCE_BEEP)
-            return buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.INSUFFICIENT_BALANCE)
+            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.INSUFFICIENT_BALANCE)
         }
 
         if (calculatedFare < 0 || calculatedFare > 100_000L) {
             logger.log("PaymentEngine", "DOUBLE FARE VALIDATION FAILED: Invalid calculated fare $calculatedFare", isError = true)
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.FAILED_BEEP)
-            return buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.FAILED_WRITE_ROLLBACK)
+            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.FAILED_WRITE_ROLLBACK)
         }
 
         // Atomic Card Write APDU Step
@@ -84,7 +86,7 @@ class PaymentEngine @Inject constructor(
             logger.log("PaymentEngine", "ATOMIC ROLLBACK: APDU Card Write Failed for UID $cardUid!", isError = true)
             ledDriver.setLedFailed()
             audioDriver.playSound(SoundType.FAILED_BEEP)
-            return buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.FAILED_WRITE_ROLLBACK)
+            return@withLock buildRecord(cardUid, bankIssuer, 0, initialBalance, initialBalance, nowMs, tapMode, passengerProfile, TransactionStatus.FAILED_WRITE_ROLLBACK)
         }
 
         // Transaction Succeeded
@@ -116,7 +118,7 @@ class PaymentEngine @Inject constructor(
         audioDriver.playSound(SoundType.SUCCESS_BEEP)
         logger.log("PaymentEngine", "TRANSACTION COMMITTED: TxId=${record.transactionId}, Deducted=$calculatedFare, FinalBalance=$finalBalance")
 
-        return record
+        return@withLock record
     }
 
     private fun calculateDynamicFare(bankIssuer: String, profile: PassengerProfile, initialBalance: Long): Long {

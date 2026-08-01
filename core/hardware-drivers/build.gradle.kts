@@ -2,7 +2,7 @@ plugins {
     alias(libs.plugins.android.library)
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.hilt.android)
-    kotlin("kapt")
+    alias(libs.plugins.ksp)
 }
 
 android {
@@ -28,8 +28,13 @@ dependencies {
     implementation(project(":core:security"))
     implementation(project(":core:hardware-api"))
 
+    // Vendor SDK compileOnly dependencies to avoid DEX class collision between E60Q and E60V2
+    compileOnly(files("../../libs/vendor-sdk/e60/E60Q/E60QSDK-release.aar"))
+    compileOnly(files("../../libs/vendor-sdk/e60/E60Q/jtbqrcodesdk-release.aar"))
+    compileOnly(files("../../libs/vendor-sdk/e60/E60V2/E60V2SDK-release.aar"))
+
     implementation(libs.androidx.core.ktx)
     implementation(libs.hilt.android)
-    kapt(libs.hilt.compiler)
+    ksp(libs.hilt.compiler)
     implementation(libs.kotlinx.coroutines.android)
 }

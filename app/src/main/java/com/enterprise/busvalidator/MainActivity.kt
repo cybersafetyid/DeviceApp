@@ -1,5 +1,3 @@
-package com.enterprise.busvalidator.MainActivity
-
 package com.enterprise.busvalidator
 
 import android.os.Bundle
@@ -48,7 +46,7 @@ class MainActivity : ComponentActivity() {
     private val uiTxState = mutableStateOf<UiTransactionState>(UiTransactionState.Idle)
 
     override fun onCreate(savedInstanceState: Bundle?) {
-        super.onCreate()
+        super.onCreate(savedInstanceState)
 
         locationManager.startLocationTracking()
         remoteControlManager.listenRemoteCommands(lifecycleScope)

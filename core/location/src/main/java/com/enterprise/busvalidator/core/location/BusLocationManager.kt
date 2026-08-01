@@ -6,6 +6,7 @@ import android.location.LocationListener
 import android.location.LocationManager as AndroidLocationManager
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.enterprise.busvalidator.core.security.MultiSourceTimeSyncEngine
+import dagger.hilt.android.qualifiers.ApplicationContext
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
@@ -17,7 +18,7 @@ import javax.inject.Singleton
  */
 @Singleton
 class BusLocationManager @Inject constructor(
-    private val context: Context,
+    @ApplicationContext private val context: Context,
     private val logger: EncryptedLogger,
     private val timeSyncEngine: MultiSourceTimeSyncEngine
 ) {

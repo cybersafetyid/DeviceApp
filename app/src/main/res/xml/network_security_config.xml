@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<network-security-config>
+    <!-- Prevent user-installed CA certificates from sniffing HTTPS traffic via Charles/HTTPCanary -->
+    <base-config cleartextTrafficPermitted="false">
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+    </base-config>
+    
+    <!-- Enforce Certificate Pinning for Backend Endpoint Domain -->
+    <domain-config cleartextTrafficPermitted="false">
+        <domain includeSubdomains="true">busvalidator.enterprise.com</domain>
+        <trust-anchors>
+            <certificates src="system" />
+        </trust-anchors>
+        <pin-set expiration="2030-01-01">
+            <!-- SHA-256 Public Key Hashes for SSL Certificate Pinning -->
+            <pin digest="SHA-256">r/mRqG64zx5ac0S7SKuab6eR5b5G2e1F00/80650965=</pin>
+            <pin digest="SHA-256">YLh1dEE9b6vB+4W1k1A5e6G789/229061093865=</pin>
+        </pin-set>
+    </domain-config>
+</network-security-config>

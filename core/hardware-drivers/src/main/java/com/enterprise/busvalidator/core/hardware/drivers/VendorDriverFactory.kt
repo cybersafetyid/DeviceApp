@@ -40,7 +40,9 @@ class DeviceModelDetector @Inject constructor(
 @Singleton
 class VendorDriverFactory @Inject constructor(
     private val detector: DeviceModelDetector,
-    private val logger: EncryptedLogger
+    private val logger: EncryptedLogger,
+    private val e60qAdapter: E60QDriverAdapter,
+    private val e60v2Adapter: E60V2DriverAdapter
 ) {
     private var activeModel: VendorDeviceModel = VendorDeviceModel.AUTO
 
@@ -53,34 +55,69 @@ class VendorDriverFactory @Inject constructor(
         logger.log("VendorFactory", "Manual vendor override set to: $vendorModel")
     }
 
-    fun createNfcDriver(): NfcDriver = DefaultNfcDriver(logger)
-    fun createSamDriver(): SamDriver = DefaultSamDriver(logger)
+    fun createNfcDriver(): NfcDriver {
+        return when (getActiveDeviceModel()) {
+            VendorDeviceModel.E60Q -> e60qAdapter
+            VendorDeviceModel.E60V2 -> e60v2Adapter
+            else -> DefaultNfcDriver(logger)
+        }
+    }
+
+    fun createSamDriver(): SamDriver {
+        return when (getActiveDeviceModel()) {
+            VendorDeviceModel.E60Q -> e60qAdapter
+            VendorDeviceModel.E60V2 -> e60v2Adapter
+            else -> DefaultSamDriver(logger)
+        }
+    }
+
     fun createSerialDriver(): SerialDriver = DefaultSerialDriver(logger)
-    fun createScannerDriver(): ScannerDriver = DefaultScannerDriver(logger)
-    fun createLedDriver(): LedDriver = DefaultLedDriver(logger)
-    fun createAudioDriver(): AudioDriver = DefaultAudioDriver(logger)
+
+    fun createScannerDriver(): ScannerDriver {
+        return when (getActiveDeviceModel()) {
+            VendorDeviceModel.E60Q -> e60qAdapter
+            else -> DefaultScannerDriver(logger)
+        }
+    }
+
+    fun createLedDriver(): LedDriver {
+        return when (getActiveDeviceModel()) {
+            VendorDeviceModel.E60Q -> e60qAdapter
+            VendorDeviceModel.E60V2 -> e60v2Adapter
+            else -> DefaultLedDriver(logger)
+        }
+    }
+
+    fun createAudioDriver(): AudioDriver {
+        return when (getActiveDeviceModel()) {
+            VendorDeviceModel.E60Q -> e60qAdapter
+            VendorDeviceModel.E60V2 -> e60v2Adapter
+            else -> DefaultAudioDriver(logger)
+        }
+    }
+
     fun createKeypadDriver(): KeypadDriver = DefaultKeypadDriver()
 }
 
-// Concrete HAL Driver Stubs & JNI / Standard Android Fallbacks
+// Default Generic Drivers
 class DefaultNfcDriver(private val logger: EncryptedLogger) : NfcDriver {
     override fun startCardListening(onCardDetected: (cardUid: String, apduHandler: (ByteArray) -> ByteArray) -> Unit) {
-        logger.log("HAL_NFC", "NFC card listening started")
+        logger.log("HAL_NFC", "Generic NFC card listening started")
     }
-    override fun stopCardListening() { logger.log("HAL_NFC", "NFC card listening stopped") }
+    override fun stopCardListening() { logger.log("HAL_NFC", "Generic NFC card listening stopped") }
     override fun isHardwareAvailable(): Boolean = true
 }
 
 class DefaultSamDriver(private val logger: EncryptedLogger) : SamDriver {
     override fun powerOnSamSlot(slotIndex: Int): Boolean {
-        logger.log("HAL_SAM", "SAM Slot $slotIndex powered ON")
+        logger.log("HAL_SAM", "Generic SAM Slot $slotIndex powered ON")
         return true
     }
     override fun transmitSamApdu(apduCommand: ByteArray, slotIndex: Int): ByteArray {
-        logger.log("HAL_SAM", "SAM Slot $slotIndex APDU Transmit (${apduCommand.size} bytes)")
-        return byteArrayOf(0x90.toByte(), 0x00.toByte()) // SW 9000 OK
+        logger.log("HAL_SAM", "Generic SAM Slot $slotIndex APDU Transmit (${apduCommand.size} bytes)")
+        return byteArrayOf(0x90.toByte(), 0x00.toByte())
     }
-    override fun powerOffSamSlot(slotIndex: Int) { logger.log("HAL_SAM", "SAM Slot $slotIndex powered OFF") }
+    override fun powerOffSamSlot(slotIndex: Int) { logger.log("HAL_SAM", "Generic SAM Slot $slotIndex powered OFF") }
 }
 
 class DefaultSerialDriver(private val logger: EncryptedLogger) : SerialDriver {
@@ -94,8 +131,8 @@ class DefaultSerialDriver(private val logger: EncryptedLogger) : SerialDriver {
 }
 
 class DefaultScannerDriver(private val logger: EncryptedLogger) : ScannerDriver {
-    override fun startQrScan(onQrScanned: (qrContent: String) -> Unit) { logger.log("HAL_SCANNER", "QR Scanner active") }
-    override fun stopQrScan() { logger.log("HAL_SCANNER", "QR Scanner stopped") }
+    override fun startQrScan(onQrScanned: (qrContent: String) -> Unit) { logger.log("HAL_SCANNER", "Generic QR Scanner active") }
+    override fun stopQrScan() { logger.log("HAL_SCANNER", "Generic QR Scanner stopped") }
 }
 
 class DefaultLedDriver(private val logger: EncryptedLogger) : LedDriver {

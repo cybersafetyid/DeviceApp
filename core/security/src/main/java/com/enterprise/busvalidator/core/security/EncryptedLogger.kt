@@ -2,6 +2,7 @@ package com.enterprise.busvalidator.core.security
 
 import android.content.Context
 import android.util.Base64
+import dagger.hilt.android.qualifiers.ApplicationContext
 import java.io.File
 import java.io.FileOutputStream
 import java.nio.charset.StandardCharsets
@@ -18,14 +19,13 @@ import javax.inject.Singleton
  */
 @Singleton
 class EncryptedLogger @Inject constructor(
-    private val context: Context
+    @ApplicationContext private val context: Context
 ) {
     private val logDirectory: File by lazy {
         File(context.filesDir, "encrypted_logs").apply { if (!exists()) mkdirs() }
     }
 
     private val masterKey: SecretKey by lazy {
-        // Master key derivation (256-bit)
         val keyBytes = "EnterpriseBusValidatorAESKey2026".toByteArray(StandardCharsets.UTF_8)
         SecretKeySpec(keyBytes, "AES")
     }
@@ -34,11 +34,11 @@ class EncryptedLogger @Inject constructor(
     fun log(tag: String, message: String, isError: Boolean = false) {
         val timestamp = System.currentTimeMillis()
         val rawEntry = "[$timestamp] [$tag] ${if (isError) "ERROR" else "INFO"}: $message\n"
-        
+
         try {
             val encryptedBytes = encryptAesGcm(rawEntry.toByteArray(StandardCharsets.UTF_8))
             val currentLogFile = File(logDirectory, "log_${timestamp / 86400000}.enc")
-            
+
             FileOutputStream(currentLogFile, true).use { fos ->
                 val line = Base64.encodeToString(encryptedBytes, Base64.NO_WRAP) + "\n"
                 fos.write(line.toByteArray(StandardCharsets.UTF_8))
