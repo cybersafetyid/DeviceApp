@@ -45,6 +45,7 @@ class PaymentEngine @Inject constructor(
         tapMode: TapMode = TapMode.TAP_IN_OUT,
         fareRulePolicy: FareRulePolicy? = null,
         routeCode: String = "BK-01",
+        terminalConfig: TerminalConfig? = null,
         samDriver: SamDriver? = null,
         transmitCardApdu: (ByteArray) -> ByteArray
     ): TransactionRecord = paymentMutex.withLock {
@@ -78,14 +79,34 @@ class PaymentEngine @Inject constructor(
         val targetFare = calculateDynamicFare("GENERIC", passengerProfile, fareRulePolicy)
 
         // Execute full APDU pipeline: readcardinfo -> auto completion -> Mandiri grace period -> deduct
-        val apduPipelineResult = bankApduManager.processFullCardApduPipeline(
-            cardUid = cardUid,
-            targetFare = targetFare,
-            tapInTimestamp = nowMs - (5 * 60 * 1000L),
-            routeCode = routeCode,
-            samDriver = samDriver,
-            transmitCardApdu = transmitCardApdu
-        )
+        val apduPipelineResult = runCatching {
+            bankApduManager.processFullCardApduPipeline(
+                cardUid = cardUid,
+                targetFare = targetFare,
+                tapInTimestamp = nowMs - (5 * 60 * 1000L),
+                routeCode = routeCode,
+                terminalConfig = terminalConfig,
+                samDriver = samDriver,
+                transmitCardApdu = transmitCardApdu
+            )
+        }.getOrElse { error ->
+            logger.log("PaymentEngine", "CARD READ PIPELINE FAILED: ${error.message}", isError = true)
+            ledDriver.setLedFailed()
+            audioDriver.playSound(SoundType.FAILED_BEEP)
+            return@withLock buildRecord(
+                cardUid,
+                BankIssuer.UNKNOWN.name,
+                "",
+                0,
+                0,
+                0,
+                0,
+                nowMs,
+                tapMode,
+                passengerProfile,
+                TransactionStatus.CARD_READ_ERROR
+            )
+        }
 
         val cardInfo = apduPipelineResult.cardInfo
         val deductResult = apduPipelineResult.deductResult

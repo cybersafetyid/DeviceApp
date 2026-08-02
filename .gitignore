@@ -3,6 +3,7 @@
 *.aar
 *.ap_
 *.aab
+!libs/vendor-sdk/**/*.aar
 
 # Files for the ART/Dalvik VM
 *.dex

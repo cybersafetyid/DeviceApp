@@ -17,6 +17,7 @@ class KmtFelicaApdu @Inject constructor(
 ) : BankApduHandler {
 
     override val bankIssuer: BankIssuer = BankIssuer.KMT_FELICA
+    private val nativeBridge = KmtMultitripNativeBridge(logger)
 
     // FeliCa Polling Command Frame: Length=06, Command=00, SystemCode=FE00, RequestCode=01, SlotNumber=00
     private val felicaPollingCommand = byteArrayOf(
@@ -24,6 +25,10 @@ class KmtFelicaApdu @Inject constructor(
     )
 
     override fun selectApplication(transmitCardApdu: (ByteArray) -> ByteArray): Boolean {
+        if (nativeBridge.isAvailable && nativeBridge.poll(transmitCardApdu)) {
+            return true
+        }
+
         val response = transmitCardApdu(felicaPollingCommand)
         // Successful FeliCa polling response code is 0x01 (Length >= 18, Response Code 01)
         val isFelicaSuccess = response.size >= 18 && response[1] == 0x01.toByte()
@@ -37,6 +42,27 @@ class KmtFelicaApdu @Inject constructor(
         transmitSamApdu: ((apdu: ByteArray) -> ByteArray)?
     ): BankCardInfo {
         logger.log("KmtFelicaAPDU", "Reading KMT FeliCa Card Info for IDm/UID: $cardUid")
+        nativeBridge.readCardInfo(transmitCardApdu)?.let { nativeInfo ->
+            val lastTransCode = TransCodeGenerator.generateTransCode(
+                bankIssuer = BankIssuer.KMT_FELICA,
+                cardUid = nativeInfo.serialNumberHex.ifBlank { cardUid },
+                transactionCounter = 0,
+                timestampMs = System.currentTimeMillis(),
+                amount = 0L
+            )
+
+            return BankCardInfo(
+                cardUid = cardUid,
+                bankIssuer = BankIssuer.KMT_FELICA,
+                cardNumberFormatted = "KMT-${nativeInfo.serialNumberHex}",
+                balance = nativeInfo.balance,
+                uncompletedTxState = UncompletedTxState.CLOSED,
+                lastTransactionTimestamp = System.currentTimeMillis(),
+                lastTransCode = lastTransCode,
+                rawApplicationData = nativeInfo.rawData
+            )
+        }
+
         selectApplication(transmitCardApdu)
 
         // FeliCa Read Without Encryption Command for Service Code 0x000B (KMT Balance & Journey Block)
@@ -131,6 +157,33 @@ class KmtFelicaApdu @Inject constructor(
         transmitSamApdu: ((apdu: ByteArray) -> ByteArray)?
     ): ApduDeductResult {
         logger.log("KmtFelicaAPDU", "EXECUTING KMT FELICA DEBIT: Card=${cardInfo.cardNumberFormatted}, Amount=$amountToDeduct")
+        nativeBridge.deduct(
+            amount = amountToDeduct,
+            timestampMs = System.currentTimeMillis(),
+            transmitCardApdu = transmitCardApdu,
+            transmitSamApdu = transmitSamApdu
+        )?.let { nativeDeduct ->
+            val finalBalance = (cardInfo.balance - amountToDeduct).coerceAtLeast(0L)
+            return ApduDeductResult(
+                isSuccess = nativeDeduct.isSuccess,
+                transCode = nativeDeduct.transCodeHex.ifBlank {
+                    TransCodeGenerator.generateTransCode(
+                        bankIssuer = BankIssuer.KMT_FELICA,
+                        cardUid = cardInfo.cardUid,
+                        transactionCounter = 0,
+                        timestampMs = System.currentTimeMillis(),
+                        amount = amountToDeduct
+                    )
+                },
+                transactionCounter = 0,
+                amountDeducted = if (nativeDeduct.isSuccess) amountToDeduct else 0L,
+                initialBalance = cardInfo.balance,
+                finalBalance = if (nativeDeduct.isSuccess) finalBalance else cardInfo.balance,
+                statusWordHex = if (nativeDeduct.isSuccess) "9000" else "6F00",
+                errorMessage = nativeDeduct.errorMessage
+            )
+        }
+
         selectApplication(transmitCardApdu)
 
         // FeliCa Write Without Encryption Command for Service Code 0x000B

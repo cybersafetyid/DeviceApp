@@ -9,6 +9,7 @@ import androidx.lifecycle.lifecycleScope
 import com.enterprise.busvalidator.core.database.TransactionDao
 import com.enterprise.busvalidator.core.devicemanager.InitStep
 import com.enterprise.busvalidator.core.devicemanager.InitializationPipelineManager
+import com.enterprise.busvalidator.core.hardware.api.DetectedCardSession
 import com.enterprise.busvalidator.core.hardware.drivers.VendorDriverFactory
 import com.enterprise.busvalidator.core.hardware.api.NfcDriver
 import com.enterprise.busvalidator.core.location.BusLocationManager
@@ -24,6 +25,7 @@ import com.enterprise.busvalidator.feature.validator.UiTransactionState
 import com.enterprise.busvalidator.feature.validator.ValidatorDashboardScreen
 import dagger.hilt.android.AndroidEntryPoint
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.launch
 import javax.inject.Inject
 
@@ -51,6 +53,7 @@ class MainActivity : ComponentActivity() {
     private var activeOperatorConfig: OperatorConfig = OperatorPresets.BISKITA_BEKASI
     private var activeApiEnvironment: ApiEnvironment = ApiEnvironment.PRODUCTION
     private var nfcDriver: NfcDriver? = null
+    private var activeTapJob: Job? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -192,8 +195,8 @@ class MainActivity : ComponentActivity() {
             nfcDriver = driver
             if (!driver.isHardwareAvailable()) return
 
-            driver.startCardListening { cardUid, apduHandler ->
-                handlePhysicalCardTap(cardUid, apduHandler, terminalConfig)
+            driver.startCardSessionListening { session ->
+                handlePhysicalCardTap(session, terminalConfig)
             }
         }.onFailure {
             uiTxState.value = UiTransactionState.UntrustedTimeError("NFC initialization failed: ${it.message}")
@@ -201,18 +204,23 @@ class MainActivity : ComponentActivity() {
     }
 
     private fun handlePhysicalCardTap(
-        cardUid: String,
-        apduHandler: (ByteArray) -> ByteArray,
+        session: DetectedCardSession,
         terminalConfig: TerminalConfig
     ) {
-        lifecycleScope.launch {
+        if (activeTapJob?.isActive == true) {
+            return
+        }
+
+        activeTapJob = lifecycleScope.launch {
+            val cardUid = session.uid
             uiTxState.value = UiTransactionState.Processing(cardUid)
             val record = paymentEngine.processCardApduFlow(
                 cardUid = cardUid,
                 fareRulePolicy = terminalConfig.operatorConfig.fareRulePolicy,
                 routeCode = terminalConfig.routeCode,
+                terminalConfig = terminalConfig,
                 samDriver = driverFactory.createSamDriver(),
-                transmitCardApdu = apduHandler
+                transmitCardApdu = session.transmitCardApdu
             )
 
             uiTxState.value = when (record.status) {
