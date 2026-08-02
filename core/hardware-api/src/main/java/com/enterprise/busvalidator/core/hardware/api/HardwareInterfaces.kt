@@ -2,8 +2,33 @@ package com.enterprise.busvalidator.core.hardware.api
 
 import kotlinx.coroutines.flow.Flow
 
+enum class CardTechnology {
+    ISO_DEP,
+    FELICA,
+    MIFARE_CLASSIC,
+    UNKNOWN
+}
+
+data class DetectedCardSession(
+    val uid: String,
+    val technology: CardTechnology,
+    val cardTypeName: String = "",
+    val transmitCardApdu: (ByteArray) -> ByteArray
+)
+
 interface NfcDriver {
     fun startCardListening(onCardDetected: (cardUid: String, apduHandler: (ByteArray) -> ByteArray) -> Unit)
+    fun startCardSessionListening(onCardDetected: (DetectedCardSession) -> Unit) {
+        startCardListening { cardUid, apduHandler ->
+            onCardDetected(
+                DetectedCardSession(
+                    uid = cardUid,
+                    technology = CardTechnology.UNKNOWN,
+                    transmitCardApdu = apduHandler
+                )
+            )
+        }
+    }
     fun stopCardListening()
     fun isHardwareAvailable(): Boolean
 }
@@ -19,6 +44,18 @@ interface SerialDriver {
     fun writeSerialData(data: ByteArray): Boolean
     fun readSerialDataFlow(): Flow<ByteArray>
     fun closeSerialPort()
+}
+
+enum class MifareKeyType {
+    KEY_A,
+    KEY_B
+}
+
+interface MifareClassicDriver {
+    fun connectMifare(): Boolean
+    fun authenticateMifareBlock(blockIndex: Int, keyType: MifareKeyType, key: ByteArray): Boolean
+    fun readMifareBlock(blockIndex: Int): ByteArray?
+    fun writeMifareBlock(blockIndex: Int, data: ByteArray): Boolean
 }
 
 interface ScannerDriver {

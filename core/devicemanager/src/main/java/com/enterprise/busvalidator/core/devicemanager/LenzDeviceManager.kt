@@ -3,10 +3,7 @@ package com.enterprise.busvalidator.core.devicemanager
 import android.content.Context
 import com.enterprise.busvalidator.core.security.EncryptedLogger
 import com.lenz.e60qsdk.sdkJni
-import com.lenz.system.LenzSystemManager
 import dagger.hilt.android.qualifiers.ApplicationContext
-import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.withContext
 import javax.inject.Inject
 import javax.inject.Singleton
 
@@ -16,12 +13,20 @@ class LenzDeviceManager @Inject constructor(
     private val logger: EncryptedLogger
 ) {
     private val sdkInstance = sdkJni.getInstance()
-    private val lenzSystemManager = LenzSystemManager.Default() // Need actual system binder if required, or static method if available. Usually binding happens via aidl or reflection. Assuming standard instantiation for now.
+    private val lenzSystemManager: Any? by lazy {
+        runCatching {
+            Class.forName("com.lenz.system.LenzSystemManager")
+                .getMethod("Default")
+                .invoke(null)
+        }.onFailure { error ->
+            logger.log("DeviceManager", "LenzSystemManager unavailable: ${error.message}", isError = true)
+        }.getOrNull()
+    }
 
     fun rebootDevice() {
         logger.log("DeviceManager", "Rebooting device via LenzSystemManager...")
         try {
-            lenzSystemManager.reboot()
+            invokeLenzSystem("reboot")
         } catch (e: Exception) {
             logger.log("DeviceManager", "Reboot failed: ${e.message}", isError = true)
         }
@@ -30,7 +35,7 @@ class LenzDeviceManager @Inject constructor(
     fun shutdownDevice() {
         logger.log("DeviceManager", "Shutting down device via LenzSystemManager...")
         try {
-            lenzSystemManager.shutdown()
+            invokeLenzSystem("shutdown")
         } catch (e: Exception) {
             logger.log("DeviceManager", "Shutdown failed: ${e.message}", isError = true)
         }
@@ -39,7 +44,7 @@ class LenzDeviceManager @Inject constructor(
     fun installApp(apkPath: String): Boolean {
         logger.log("DeviceManager", "Installing APK from path: $apkPath")
         return try {
-            lenzSystemManager.setInstallApkPath(apkPath)
+            invokeLenzSystem("setInstallApkPath", apkPath)
             true
         } catch (e: Exception) {
             logger.log("DeviceManager", "Install failed: ${e.message}", isError = true)
@@ -50,7 +55,7 @@ class LenzDeviceManager @Inject constructor(
     fun uninstallApp(packageName: String) {
         logger.log("DeviceManager", "Uninstalling package: $packageName")
         try {
-            lenzSystemManager.uninstallApp(packageName)
+            invokeLenzSystem("uninstallApp", packageName)
         } catch (e: Exception) {
             logger.log("DeviceManager", "Uninstall failed: ${e.message}", isError = true)
         }
@@ -114,5 +119,13 @@ class LenzDeviceManager @Inject constructor(
             logger.log("DeviceManager", "Command execution failed: ${e.message}", isError = true)
             ""
         }
+    }
+
+    private fun invokeLenzSystem(methodName: String, vararg args: Any) {
+        val manager = lenzSystemManager ?: error("LenzSystemManager is unavailable")
+        val method = manager.javaClass.methods.firstOrNull { method ->
+            method.name == methodName && method.parameterTypes.size == args.size
+        } ?: error("LenzSystemManager method not found: $methodName/${args.size}")
+        method.invoke(manager, *args)
     }
 }

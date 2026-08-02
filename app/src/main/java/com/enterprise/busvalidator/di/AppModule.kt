@@ -40,6 +40,11 @@ object AppModule {
 
     @Provides
     @Singleton
+    fun provideMifareClassicDriver(factory: VendorDriverFactory): MifareClassicDriver =
+        factory.createMifareClassicDriver()
+
+    @Provides
+    @Singleton
     fun provideScannerDriver(factory: VendorDriverFactory): ScannerDriver = factory.createScannerDriver()
 
     @Provides

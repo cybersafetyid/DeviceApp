@@ -33,6 +33,20 @@ android {
 
         buildConfigField("String", "GIT_HASH", "\"$gitCommitHash\"")
         buildConfigField("Long", "BUILD_TIME", "${System.currentTimeMillis()}L")
+
+        ndk {
+            abiFilters += "armeabi-v7a"
+        }
+    }
+
+    flavorDimensions += "deviceSdk"
+    productFlavors {
+        create("e60q") {
+            dimension = "deviceSdk"
+        }
+        create("e60v2") {
+            dimension = "deviceSdk"
+        }
     }
 
     buildTypes {
@@ -74,9 +88,18 @@ dependencies {
     implementation(project(":feature:diagnostic"))
     implementation(project(":feature:settings"))
 
-    // Vendor SDK compileOnly dependencies
+    // E60Q and E60V2 expose duplicate classes/native libs. Keep them in mutually
+    // exclusive runtime flavors so no APK packages both SDKs at once.
+    "e60qImplementation"(files("../libs/vendor-sdk/e60/E60Q/E60QSDK-release.aar"))
+    "e60qImplementation"(files("../libs/vendor-sdk/e60/E60Q/jtbqrcodesdk-release.aar"))
+    "e60v2Implementation"(files("../libs/vendor-sdk/e60/E60V2/E60V2SDK-release.aar"))
+    implementation(files("../libs/vendor-sdk/kmt/MultitripAndroid-release.aar"))
+    implementation(files("../libs/vendor-sdk/netlibs/netlibs-release.aar"))
+    implementation(files("../libs/vendor-sdk/netlibs/filelog-release.aar"))
+    implementation(libs.gson)
+    implementation(libs.commons.net)
+    implementation(libs.commons.lang3)
     compileOnly(files("../libs/vendor-sdk/e60/E60Q/E60QSDK-release.aar"))
-    compileOnly(files("../libs/vendor-sdk/e60/E60Q/jtbqrcodesdk-release.aar"))
     compileOnly(files("../libs/vendor-sdk/e60/E60V2/E60V2SDK-release.aar"))
 
     implementation(libs.androidx.core.ktx)

@@ -8,7 +8,6 @@ import com.enterprise.busvalidator.core.security.MultiSourceTimeSyncEngine
 import com.enterprise.busvalidator.core.security.RuntimePermissionProvisioner
 import com.enterprise.busvalidator.core.sync.SyncManager
 import com.enterprise.busvalidator.core.sync.TelemetrySyncManager
-import com.lenz.system.LenzSystemManager
 import dagger.hilt.android.HiltAndroidApp
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -59,9 +58,14 @@ class BusValidatorApplication : Application() {
 
     private fun activateDaemonMode() {
         try {
-            LenzSystemManager.Default().startDaemonApp(packageName)
+            val manager = Class.forName("com.lenz.system.LenzSystemManager")
+                .getMethod("Default")
+                .invoke(null)
+            manager.javaClass
+                .getMethod("startDaemonApp", String::class.java)
+                .invoke(manager, packageName)
             logger.log("Application", "Daemon Mode Activated for $packageName")
-        } catch (e: Exception) {
+        } catch (e: Throwable) {
             logger.log("Application", "Failed to start Daemon Mode: ${e.message}", isError = true)
         }
     }
