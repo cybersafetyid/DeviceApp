@@ -27,7 +27,8 @@ class BankApduManager @Inject constructor(
     private val bniApdu: BniTapCashApdu,
     private val dkiApdu: BankDkiJakCardApdu,
     private val nobuApdu: BankNobuApdu,
-    private val kmtApdu: KmtFelicaApdu
+    private val kmtApdu: KmtFelicaApdu,
+    private val legacyNetlibsBridge: LegacyNetlibsCardBridge? = null
 ) {
     private val handlers: List<BankApduHandler> by lazy {
         listOf(mandiriApdu, bcaApdu, briApdu, bniApdu, dkiApdu, nobuApdu, kmtApdu)
@@ -59,12 +60,25 @@ class BankApduManager @Inject constructor(
         targetFare: Long,
         tapInTimestamp: Long,
         routeCode: String,
+        terminalConfig: TerminalConfig? = null,
         samDriver: SamDriver?,
         transmitCardApdu: (ByteArray) -> ByteArray
     ): CardApduPipelineResult {
         val samTransmitLambda: ((ByteArray) -> ByteArray)? = if (samDriver != null) {
             { apdu -> samDriver.transmitSamApdu(apdu, 0) }
         } else null
+
+        when (val legacyResult = legacyNetlibsBridge?.processFullCardPipeline(
+            cardUid = cardUid,
+            targetFare = targetFare,
+            routeCode = routeCode,
+            terminalConfig = terminalConfig,
+            transmitCardApdu = transmitCardApdu,
+            transmitSamApdu = samTransmitLambda
+        )) {
+            is LegacyNetlibsPipelineOutcome.Processed -> return legacyResult.result
+            LegacyNetlibsPipelineOutcome.Fallback, null -> Unit
+        }
 
         val handler = detectBankHandler(transmitCardApdu) ?: mandiriApdu
 

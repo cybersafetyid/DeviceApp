@@ -20,6 +20,9 @@ mlkit = "17.3.0"
 zxing = "3.5.3"
 playServicesLocation = "21.3.0"
 firebaseBom = "33.1.2"
+gson = "2.8.5"
+commonsNet = "3.3"
+commonsLang3 = "3.6"
 
 [libraries]
 androidx-core-ktx = { group = "androidx.core", name = "core-ktx", version.ref = "coreKtx" }
@@ -73,6 +76,9 @@ kotlinx-coroutines-test = { group = "org.jetbrains.kotlinx", name = "kotlinx-cor
 # Firebase
 firebase-bom = { group = "com.google.firebase", name = "firebase-bom", version.ref = "firebaseBom" }
 firebase-messaging = { group = "com.google.firebase", name = "firebase-messaging" }
+gson = { group = "com.google.code.gson", name = "gson", version.ref = "gson" }
+commons-net = { group = "commons-net", name = "commons-net", version.ref = "commonsNet" }
+commons-lang3 = { group = "org.apache.commons", name = "commons-lang3", version.ref = "commonsLang3" }
 
 [plugins]
 android-application = { id = "com.android.application", version.ref = "agp" }

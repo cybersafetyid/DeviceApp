@@ -18,12 +18,19 @@ import javax.inject.Singleton
 @Singleton
 class E60QDriverAdapter @Inject constructor(
     private val logger: EncryptedLogger
-) : NfcDriver, SamDriver, LedDriver, AudioDriver, ScannerDriver {
+) : NfcDriver, SamDriver, LedDriver, AudioDriver, ScannerDriver, MifareClassicDriver {
 
     private var pollingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var currentMifareUid: ByteArray = ByteArray(0)
 
     override fun startCardListening(onCardDetected: (cardUid: String, apduHandler: (ByteArray) -> ByteArray) -> Unit) {
+        startCardSessionListening { session ->
+            onCardDetected(session.uid, session.transmitCardApdu)
+        }
+    }
+
+    override fun startCardSessionListening(onCardDetected: (DetectedCardSession) -> Unit) {
         logger.log("E60Q_HAL", "Initializing E60Q Lenz Contactless RF Card Reader...")
         val initResult = sdkJni.getInstance().sdkInit(null, null)
         val openResult = RfCardDriver.getInstance().open()
@@ -43,19 +50,11 @@ class E60QDriverAdapter @Inject constructor(
                     if (cardInfo != null && cardInfo.searchResult == RfCardInfo.NFC_ERR_NONE) {
                         val uidBytes = cardInfo.rfUid ?: ByteArray(0)
                         val uidString = uidBytes.joinToString("") { "%02X".format(it) }
+                        currentMifareUid = uidBytes
                         
                         logger.log("E60Q_HAL", "Card Detected! UID: $uidString, Type: ${cardInfo.rfCardTypeName}")
-                        
-                        onCardDetected(uidString) { apduCommand ->
-                            logger.log("E60Q_HAL", "Sending APDU to Card: ${apduCommand.joinToString("") { "%02X".format(it) }}")
-                            val response = RfCardDriver.getInstance().apduExchange(apduCommand)
-                            if (response == null || response.isEmpty()) {
-                                logger.log("E60Q_HAL", "Null or empty APDU response", isError = true)
-                                byteArrayOf(0x6F.toByte(), 0x00.toByte())
-                            } else {
-                                response
-                            }
-                        }
+
+                        onCardDetected(cardInfo.toDetectedCardSession("E60Q_HAL", logger))
                         
                         // Wait a bit before polling again to avoid spamming same card
                         delay(1000)
@@ -171,13 +170,29 @@ class E60QDriverAdapter @Inject constructor(
             logger.log("E60Q_HAL", "Failed to close scanner: ${e.message}", isError = true)
         }
     }
+
+    override fun connectMifare(): Boolean {
+        return reconnectMifare("E60Q_HAL", logger) { currentMifareUid = it }
+    }
+
+    override fun authenticateMifareBlock(blockIndex: Int, keyType: MifareKeyType, key: ByteArray): Boolean {
+        return authenticateMifareBlock("E60Q_HAL", logger, currentMifareUid, blockIndex, keyType, key)
+    }
+
+    override fun readMifareBlock(blockIndex: Int): ByteArray? {
+        return readMifareBlock("E60Q_HAL", logger, blockIndex)
+    }
+
+    override fun writeMifareBlock(blockIndex: Int, data: ByteArray): Boolean {
+        return writeMifareBlock("E60Q_HAL", logger, blockIndex, data)
+    }
 }
 
 @Singleton
 class E60V2DriverAdapter @Inject constructor(
     @ApplicationContext private val context: Context,
     private val logger: EncryptedLogger
-) : NfcDriver, SamDriver, LedDriver, AudioDriver, ScannerDriver {
+) : NfcDriver, SamDriver, LedDriver, AudioDriver, ScannerDriver, MifareClassicDriver {
 
     private val cameraScannerEngine by lazy {
         E60V2CameraScannerEngine(context, logger)
@@ -185,8 +200,15 @@ class E60V2DriverAdapter @Inject constructor(
 
     private var pollingJob: Job? = null
     private val scope = CoroutineScope(Dispatchers.IO + SupervisorJob())
+    private var currentMifareUid: ByteArray = ByteArray(0)
 
     override fun startCardListening(onCardDetected: (cardUid: String, apduHandler: (ByteArray) -> ByteArray) -> Unit) {
+        startCardSessionListening { session ->
+            onCardDetected(session.uid, session.transmitCardApdu)
+        }
+    }
+
+    override fun startCardSessionListening(onCardDetected: (DetectedCardSession) -> Unit) {
         logger.log("E60V2_HAL", "Initializing E60V2 RfCardDriver...")
         val initResult = sdkJni.getInstance().sdkInit(null, null)
         val openResult = RfCardDriver.getInstance().open()
@@ -204,19 +226,11 @@ class E60V2DriverAdapter @Inject constructor(
                     if (cardInfo != null && cardInfo.searchResult == RfCardInfo.NFC_ERR_NONE) {
                         val uidBytes = cardInfo.rfUid ?: ByteArray(0)
                         val uidString = uidBytes.joinToString("") { "%02X".format(it) }
+                        currentMifareUid = uidBytes
                         
                         logger.log("E60V2_HAL", "Card Detected! UID: $uidString, Type: ${cardInfo.rfCardTypeName}")
-                        
-                        onCardDetected(uidString) { apduCommand ->
-                            logger.log("E60V2_HAL", "Sending APDU to Card: ${apduCommand.joinToString("") { "%02X".format(it) }}")
-                            val response = RfCardDriver.getInstance().apduExchange(apduCommand)
-                            if (response == null || response.isEmpty()) {
-                                logger.log("E60V2_HAL", "Null or empty APDU response", isError = true)
-                                byteArrayOf(0x6F.toByte(), 0x00.toByte())
-                            } else {
-                                response
-                            }
-                        }
+
+                        onCardDetected(cardInfo.toDetectedCardSession("E60V2_HAL", logger))
                         
                         delay(1000)
                     }
@@ -301,4 +315,182 @@ class E60V2DriverAdapter @Inject constructor(
         logger.log("E60V2_HAL", "Stopping E60V2 Camera QR Scanner Engine...")
         cameraScannerEngine.stopScanning()
     }
+
+    override fun connectMifare(): Boolean {
+        return reconnectMifare("E60V2_HAL", logger) { currentMifareUid = it }
+    }
+
+    override fun authenticateMifareBlock(blockIndex: Int, keyType: MifareKeyType, key: ByteArray): Boolean {
+        return authenticateMifareBlock("E60V2_HAL", logger, currentMifareUid, blockIndex, keyType, key)
+    }
+
+    override fun readMifareBlock(blockIndex: Int): ByteArray? {
+        return readMifareBlock("E60V2_HAL", logger, blockIndex)
+    }
+
+    override fun writeMifareBlock(blockIndex: Int, data: ByteArray): Boolean {
+        return writeMifareBlock("E60V2_HAL", logger, blockIndex, data)
+    }
 }
+
+private fun RfCardInfo.toDetectedCardSession(tag: String, logger: EncryptedLogger): DetectedCardSession {
+    val uidBytes = rfUid ?: ByteArray(0)
+    val uidString = uidBytes.joinToString("") { "%02X".format(it) }
+    val cardType = rfCardTypeName.orEmpty()
+    return DetectedCardSession(
+        uid = uidString,
+        technology = detectTechnology(uidBytes, cardType),
+        cardTypeName = cardType,
+        transmitCardApdu = { apduCommand ->
+            exchangeDetectedCardCommand(tag, logger, this, apduCommand)
+        }
+    )
+}
+
+private fun detectTechnology(uidBytes: ByteArray, cardTypeName: String): CardTechnology {
+    val normalizedType = cardTypeName.uppercase()
+    return when {
+        normalizedType.contains("FELICA") || normalizedType.contains("KMT") -> CardTechnology.FELICA
+        normalizedType.contains("MIFARE") || normalizedType.contains("M1") -> CardTechnology.MIFARE_CLASSIC
+        uidBytes.size == 8 -> CardTechnology.FELICA
+        uidBytes.isNotEmpty() -> CardTechnology.ISO_DEP
+        else -> CardTechnology.UNKNOWN
+    }
+}
+
+private fun exchangeDetectedCardCommand(
+    tag: String,
+    logger: EncryptedLogger,
+    cardInfo: RfCardInfo,
+    apduCommand: ByteArray
+): ByteArray {
+    logger.log(tag, "Sending card command (${apduCommand.size} bytes): ${apduCommand.toHexString()}")
+    return try {
+        val response = if (shouldUseFelicaTransport(cardInfo, apduCommand)) {
+            transmitFelicaCommand(apduCommand)
+        } else {
+            RfCardDriver.getInstance().apduExchange(apduCommand)
+        }
+        if (response == null || response.isEmpty()) {
+            logger.log(tag, "Null or empty card response", isError = true)
+            byteArrayOf(0x6F.toByte(), 0x00.toByte())
+        } else {
+            response
+        }
+    } catch (error: Throwable) {
+        logger.log(tag, "Card command failed: ${error.message}", isError = true)
+        byteArrayOf(0x6F.toByte(), 0x00.toByte())
+    }
+}
+
+private fun shouldUseFelicaTransport(cardInfo: RfCardInfo, command: ByteArray): Boolean {
+    val typeName = cardInfo.rfCardTypeName.orEmpty().uppercase()
+    if (typeName.contains("FELICA") || typeName.contains("KMT")) return true
+    if (command.size < 2) return false
+    val frameLength = command[0].toInt() and 0xFF
+    val felicaCommandCode = command[1].toInt() and 0xFF
+    return frameLength == command.size && felicaCommandCode in FELICA_COMMAND_CODES
+}
+
+private fun transmitFelicaCommand(command: ByteArray): ByteArray? {
+    if (command.size < 2) return null
+    val driver = RfCardDriver.getInstance()
+    val felicaExecCmd = driver.javaClass.methods.firstOrNull { method ->
+        method.name == "felicaExecCmd" && method.parameterTypes.size == 5
+    } ?: return driver.apduExchange(command)
+
+    val responseLength = IntArray(2)
+    val responseData = ByteArray(MAX_FELICA_RESPONSE_BYTES)
+    val payload = command.copyOfRange(1, command.size)
+    val result = felicaExecCmd.invoke(
+        driver,
+        command[0],
+        payload.size,
+        payload,
+        responseLength,
+        responseData
+    ) as? Int ?: -1
+    return if (result == 0 && responseLength[0] > 0) {
+        responseData.copyOf(responseLength[0])
+    } else {
+        null
+    }
+}
+
+private fun reconnectMifare(tag: String, logger: EncryptedLogger, onUid: (ByteArray) -> Unit): Boolean {
+    return try {
+        RfCardDriver.getInstance().close()
+        val openResult = RfCardDriver.getInstance().open()
+        if (openResult != 0) {
+            logger.log(tag, "MIFARE reconnect open failed: $openResult", isError = true)
+            return false
+        }
+        val cardInfo = RfCardDriver.getInstance().searchCard(MIFARE_SEARCH_TIMEOUT_MS)
+        if (cardInfo != null && cardInfo.searchResult == RfCardInfo.NFC_ERR_NONE) {
+            onUid(cardInfo.rfUid ?: ByteArray(0))
+            true
+        } else {
+            logger.log(tag, "MIFARE card not found during reconnect", isError = true)
+            false
+        }
+    } catch (error: Throwable) {
+        logger.log(tag, "MIFARE reconnect failed: ${error.message}", isError = true)
+        false
+    }
+}
+
+private fun authenticateMifareBlock(
+    tag: String,
+    logger: EncryptedLogger,
+    uid: ByteArray,
+    blockIndex: Int,
+    keyType: MifareKeyType,
+    key: ByteArray
+): Boolean {
+    if (uid.isEmpty() || key.size != MIFARE_KEY_SIZE_BYTES) {
+        logger.log(tag, "MIFARE auth rejected due to invalid UID/key length", isError = true)
+        return false
+    }
+    return try {
+        val sdkKeyType = when (keyType) {
+            MifareKeyType.KEY_A -> RfCardInfo.NFC_KEYA
+            MifareKeyType.KEY_B -> RfCardInfo.NFC_KEYB
+        }
+        RfCardDriver.getInstance().m1Authenticate(blockIndex.toByte(), sdkKeyType, key, uid) == 0
+    } catch (error: Throwable) {
+        logger.log(tag, "MIFARE auth failed: ${error.message}", isError = true)
+        false
+    }
+}
+
+private fun readMifareBlock(tag: String, logger: EncryptedLogger, blockIndex: Int): ByteArray? {
+    return try {
+        val data = ByteArray(MIFARE_BLOCK_SIZE_BYTES)
+        val result = RfCardDriver.getInstance().m1ReadBlock(blockIndex.toByte(), data)
+        if (result == 0) data else null
+    } catch (error: Throwable) {
+        logger.log(tag, "MIFARE read failed: ${error.message}", isError = true)
+        null
+    }
+}
+
+private fun writeMifareBlock(tag: String, logger: EncryptedLogger, blockIndex: Int, data: ByteArray): Boolean {
+    if (data.size != MIFARE_BLOCK_SIZE_BYTES) {
+        logger.log(tag, "MIFARE write rejected due to invalid block size ${data.size}", isError = true)
+        return false
+    }
+    return try {
+        RfCardDriver.getInstance().m1WriteBlock(blockIndex.toByte(), data) == 0
+    } catch (error: Throwable) {
+        logger.log(tag, "MIFARE write failed: ${error.message}", isError = true)
+        false
+    }
+}
+
+private fun ByteArray.toHexString(): String = joinToString("") { "%02X".format(it) }
+
+private val FELICA_COMMAND_CODES = setOf(0x00, 0x02, 0x04, 0x06, 0x08, 0x0A, 0x0C, 0x0E, 0x10)
+private const val MAX_FELICA_RESPONSE_BYTES = 300
+private const val MIFARE_SEARCH_TIMEOUT_MS = 500
+private const val MIFARE_BLOCK_SIZE_BYTES = 16
+private const val MIFARE_KEY_SIZE_BYTES = 6

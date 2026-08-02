@@ -80,6 +80,14 @@ class VendorDriverFactory @Inject constructor(
         }
     }
 
+    fun createMifareClassicDriver(): MifareClassicDriver {
+        return when (getActiveDeviceModel()) {
+            VendorDeviceModel.E60Q -> e60qAdapter
+            VendorDeviceModel.E60V2 -> e60v2Adapter
+            else -> DefaultMifareClassicDriver(logger)
+        }
+    }
+
     fun createScannerDriver(): ScannerDriver {
         return when (getActiveDeviceModel()) {
             VendorDeviceModel.E60Q -> e60qAdapter
@@ -136,6 +144,17 @@ class DefaultSerialDriver(private val logger: EncryptedLogger) : SerialDriver {
     override fun writeSerialData(data: ByteArray): Boolean = true
     override fun readSerialDataFlow(): Flow<ByteArray> = emptyFlow()
     override fun closeSerialPort() { logger.log("HAL_SERIAL", "Port closed") }
+}
+
+class DefaultMifareClassicDriver(private val logger: EncryptedLogger) : MifareClassicDriver {
+    override fun connectMifare(): Boolean {
+        logger.log("HAL_MIFARE", "Generic MIFARE driver unavailable")
+        return false
+    }
+
+    override fun authenticateMifareBlock(blockIndex: Int, keyType: MifareKeyType, key: ByteArray): Boolean = false
+    override fun readMifareBlock(blockIndex: Int): ByteArray? = null
+    override fun writeMifareBlock(blockIndex: Int, data: ByteArray): Boolean = false
 }
 
 class DefaultScannerDriver(private val logger: EncryptedLogger) : ScannerDriver {
